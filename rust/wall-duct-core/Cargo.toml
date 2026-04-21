@@ -1,0 +1,13 @@
+[package]
+name = "wall-duct-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Differentiable HVAC duct-noise model — pure Rust core."
+
+[lib]
+
+[dependencies]
+
+[dev-dependencies]
+approx = "0.5"

@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["wall-duct-core", "wall-duct-wasm"]
+
+[profile.release]
+# Small+fast WASM: LTO and single codegen unit.
+opt-level = "s"
+lto = true
+codegen-units = 1

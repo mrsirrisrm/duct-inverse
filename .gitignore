@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Rust build artefacts
+rust/target/
+
+# wasm-pack output. Source of truth for the web app is the committed
+# ./wasm/ dir at the repo root — `rust/wall-duct-wasm/pkg/` is a local
+# rebuild scratch dir, and pkg-node/ is only for local Node smoke tests.
+rust/wall-duct-wasm/pkg/
+rust/wall-duct-wasm/pkg-node/
+
+# Node
+node_modules/
+dist/
+
+# Secrets
+.env
+
+# Editor scratch
+.playwright-mcp/

@@ -1,0 +1,19 @@
+[package]
+name = "wall-duct-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "WebAssembly wrapper for wall-duct-core."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wall-duct-core = { path = "../wall-duct-core" }
+wasm-bindgen = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+[package.metadata.wasm-pack.profile.release]
+# Bundled wasm-opt can't parse modern multi-table WASM output; leave it off.
+wasm-opt = false
