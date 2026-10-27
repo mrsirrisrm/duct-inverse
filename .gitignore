@@ -19,6 +19,19 @@ dist/
 
 # Secrets
 .env
+.env.*
+!.env.example
 
-# Editor scratch
+# Model files. Client Revit/IFC models are confidential and large; samples
+# are fetched for a run, never committed.
+*.rvt
+*.rfa
+*.rte
+*.rft
+*.ifc
+*.ifczip
+
+# Editor and tool scratch
 .playwright-mcp/
+.serena/
+.DS_Store
