@@ -1,0 +1,15 @@
+[package]
+name = "duct-heal"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rebuild a connected duct network from rvt-rs element output."
+
+[lib]
+
+[[bin]]
+name = "duct-heal"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"

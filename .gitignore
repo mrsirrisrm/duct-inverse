@@ -5,6 +5,7 @@ __pycache__/
 
 # Rust build artefacts
 rust/target/
+rvt-read/target/
 
 # wasm-pack output. Source of truth for the web app is the committed
 # ./wasm/ dir at the repo root — `rust/wall-duct-wasm/pkg/` is a local
