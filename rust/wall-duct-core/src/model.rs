@@ -38,10 +38,11 @@ use crate::physics::{
     sub_bands,
 };
 
-/// Compile-time maximum chain length. Generous — a real supply path is
-/// usually 3–6 blocks. The cost of being oversized is purely a larger
-/// sensitivity vector carried through the forward pass.
-pub const MAX_BLOCKS: usize = 12;
+/// Compile-time maximum chain length. A path extracted from a model, with
+/// each straight, bend and branch as its own block, runs to 20 or so. The
+/// cost of being oversized is purely a larger sensitivity vector carried
+/// through the forward pass.
+pub const MAX_BLOCKS: usize = 32;
 
 /// Slots reserved per block (largest variant is Attenuator with 5 params).
 pub const MAX_BLOCK_SLOTS: usize = 5;
@@ -92,6 +93,11 @@ pub enum BlockParams {
         width_m: f64,
         height_m: f64,
     },
+    /// Branch division: the path continues with `flow_ratio` of the flow
+    /// arriving, and carries that share of the sound power.
+    Branch {
+        flow_ratio: f64,
+    },
 }
 
 impl BlockParams {
@@ -101,6 +107,7 @@ impl BlockParams {
             Self::Bend { .. } => "Bend",
             Self::Attenuator { .. } => "Attenuator",
             Self::Diffuser { .. } => "Diffuser",
+            Self::Branch { .. } => "Branch",
         }
     }
 
@@ -119,6 +126,7 @@ impl BlockParams {
                 "splitter_raw",
             ],
             Self::Diffuser { .. } => &["log_width", "log_height"],
+            Self::Branch { .. } => &["log_flow_ratio"],
         }
     }
 }
@@ -147,6 +155,9 @@ pub enum Block {
     Diffuser {
         log_width: DualN,
         log_height: DualN,
+    },
+    Branch {
+        log_flow_ratio: DualN,
     },
 }
 
@@ -190,6 +201,18 @@ impl Block {
                 log_width: v(width_m.ln(), 0),
                 log_height: v(height_m.ln(), 1),
             },
+            BlockParams::Branch { flow_ratio } => Self::Branch {
+                log_flow_ratio: v(flow_ratio.ln(), 0),
+            },
+        }
+    }
+
+    /// Flow leaving this block given the flow arriving: changed only by a
+    /// branch.
+    pub fn flow_out(&self, q: DualN) -> DualN {
+        match self {
+            Self::Branch { log_flow_ratio } => q * log_flow_ratio.exp(),
+            _ => q,
         }
     }
 
@@ -260,6 +283,16 @@ impl Block {
                 let regen = regenerative_pwl_db(q / area, area);
                 let after_erl = sub_bands(pwl_in, &erl);
                 db_add(&after_erl, &regen)
+            }
+            Self::Branch { log_flow_ratio } => {
+                // Power divides in proportion to flow: 10 log10(ratio), as
+                // 10 / ln 10 · ln(ratio). Band-independent.
+                let division = *log_flow_ratio * (10.0 / std::f64::consts::LN_10);
+                let mut out = *pwl_in;
+                for band in &mut out {
+                    *band = *band + division;
+                }
+                out
             }
         }
     }
@@ -360,10 +393,13 @@ impl DuctSystem {
     pub fn rt60(&self) -> DualN { self.log_rt60.exp() }
     pub fn receiver_distance(&self) -> DualN { self.log_receiver_distance.exp() }
 
+    /// `volume_flow` is the flow leaving the source; each block sees the flow
+    /// left after the branches before it, and passes on its own `flow_out`.
     pub fn diffuser_pwl(&self) -> Band {
-        let q = self.volume_flow();
+        let mut q = self.volume_flow();
         let mut pwl = source_pwl(self.source_type, self.source_offset);
         for block in &self.blocks {
+            q = block.flow_out(q);
             pwl = block.forward(&pwl, q);
         }
         pwl
@@ -513,6 +549,32 @@ mod tests {
         }
         let nc = sys.nc();
         assert!((15..=70).contains(&nc), "NC {nc} out of range");
+    }
+
+    /// A branch passing half the flow lowers every band by 10 log10 2 at the
+    /// diffuser, less the change in diffuser regen from the halved velocity.
+    /// With the diffuser's regen made negligible (a huge face, ~55 dB below
+    /// the fan), the drop is 3.01 dB and the flow-ratio gradient 10 / ln 10,
+    /// to within what that regen still contributes.
+    #[test]
+    fn branch_divides_power_by_flow_ratio() {
+        let chain = |blocks: Vec<BlockParams>| Params {
+            source_type: SourceType::AxialFan,
+            source_offset_db: 0.0,
+            volume_flow_m3s: 0.2,
+            room_volume_m3: 50.0,
+            rt60_s: 0.6,
+            receiver_distance_m: 2.0,
+            blocks,
+        };
+        let diffuser = BlockParams::Diffuser { width_m: 20.0, height_m: 20.0 };
+        let whole = DuctSystem::from_params(&chain(vec![diffuser])).diffuser_pwl();
+        let half = DuctSystem::from_params(&chain(vec![BlockParams::Branch { flow_ratio: 0.5 }, diffuser]))
+            .diffuser_pwl();
+        for i in 0..N_BANDS {
+            assert_relative_eq!(whole[i].value - half[i].value, 10.0 * 2.0f64.log10(), max_relative = 1e-4);
+            assert_relative_eq!(half[i].grad[block_slot_base(0)], 10.0 / std::f64::consts::LN_10, max_relative = 1e-4);
+        }
     }
 
     /// Slot labels resolve to readable strings.

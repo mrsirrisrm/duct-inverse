@@ -12,6 +12,7 @@
 pub mod graph;
 pub mod heal;
 pub mod network;
+pub mod path;
 pub mod rvt_json;
 
 pub use network::{EdgeSource, Network, Node, NodeKind};

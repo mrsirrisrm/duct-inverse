@@ -13,3 +13,6 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json = "1"
+
+[dev-dependencies]
+wall-duct-core = { path = "../rust/wall-duct-core" }
