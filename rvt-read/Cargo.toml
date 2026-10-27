@@ -13,6 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json = "1"
+# Read Revit files directly. Pinned: rvt-rs is pre-1.0 and its element
+# fields are what `build` matches on.
+rvt = { git = "https://github.com/DrunkOnJava/rvt-rs", rev = "e5846fe79517b036b3524639237ab0c9cab4d08f", optional = true }
 
-[dev-dependencies]
-wall-duct-core = { path = "../rust/wall-duct-core" }
+[features]
+rvt = ["dep:rvt"]

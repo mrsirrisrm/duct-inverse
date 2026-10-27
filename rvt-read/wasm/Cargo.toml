@@ -1,0 +1,20 @@
+[package]
+name = "duct-pipeline"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Revit file to downduct noise in one WASM module: rvt-rs, duct-heal, wall-duct-core."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+duct-heal = { path = "..", features = ["rvt"] }
+wall-duct-core = { path = "../../rust/wall-duct-core" }
+rvt = { git = "https://github.com/DrunkOnJava/rvt-rs", rev = "e5846fe79517b036b3524639237ab0c9cab4d08f" }
+serde_json = "1"
+# Matches the wasm-bindgen CLI the build uses.
+wasm-bindgen = "=0.2.118"
+
+[profile.release]
+opt-level = 3

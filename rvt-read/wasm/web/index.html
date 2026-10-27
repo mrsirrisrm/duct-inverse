@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Revit duct path</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; }
+  table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td, th { padding: 2px 8px; text-align: right; border-bottom: 1px solid #ddd; }
+  td:nth-child(2), th:nth-child(2) { text-align: left; }
+  pre { white-space: pre-wrap; }
+</style>
+<p>Pick a Revit file. It is read here, in this tab; nothing is uploaded.</p>
+<input type="file" accept=".rvt">
+<p id="status"></p>
+<div id="out"></div>
+<script type="module">
+const params = new URLSearchParams(location.search);
+let runs = 0;
+const worker = new Worker('./worker.js', { type: 'module' });
+const status = document.getElementById('status');
+const out = document.getElementById('out');
+
+async function run(bytes) {
+  status.textContent = `analysing ${(bytes.byteLength / 1e6).toFixed(0)} MB…`;
+  worker.postMessage(bytes, [bytes]);
+}
+
+worker.onmessage = ({ data }) => {
+  window.__result = data;
+  if (data.error) { status.textContent = data.error; return; }
+  const { report: r, ms, wasmMemoryMB } = data;
+  status.textContent = `${(ms / 1000).toFixed(1)} s, ${wasmMemoryMB} MB WASM memory`;
+  // ?beacon reports the timing to the serving host, for runs nobody watches.
+  if (params.has('beacon')) fetch(`/beacon?run=${++runs}&ms=${ms}&t=${encodeURIComponent(JSON.stringify(r.timings_ms))}&mem=${wasmMemoryMB}&nc=${r.path?.nc}`).catch(() => {});
+  const p = r.path;
+  if (!p) { out.textContent = 'no supply path found'; return; }
+  const row = b => `<tr><td>${b.index}</td><td>${b.type} ${b.note}</td><td>${b.flow_l_s.toFixed(0)}</td>`
+    + `<td>${b.velocity_m_s?.toFixed(1) ?? ''}</td>${b.lw_db.map(v => `<td>${v.toFixed(1)}</td>`).join('')}</tr>`;
+  out.innerHTML = `
+    <p>Islands ${r.recorded.islands} → ${r.healed.islands}; terminals reaching a unit
+      ${r.recorded.terminals_with_equipment} → ${r.healed.terminals_with_equipment} of ${r.healed.terminals}.</p>
+    <p>${p.unit.family} (${p.system}) → ${p.terminal.family}: ${p.elements} elements, ${p.blocks.length} blocks,
+      <b>NC ${p.nc}</b></p>
+    <table><tr><th>#</th><th>block</th><th>L/s</th><th>m/s</th>${p.bands_hz.map(f => `<th>${f}</th>`).join('')}</tr>
+      ${p.blocks.map(row).join('')}
+      <tr><td></td><td>receiver SPL</td><td></td><td></td>${p.receiver_spl_db.map(v => `<td>${v.toFixed(1)}</td>`).join('')}</tr>
+    </table>
+    <pre>${[...r.warnings.map(w => 'warning: ' + w), ...r.assumptions.map(a => 'assumed: ' + a)].join('\n')}</pre>`;
+};
+
+document.querySelector('input').onchange = async e => run(await e.target.files[0].arrayBuffer());
+// ?model=<url> loads a file without the picker (for automated runs).
+const model = params.get('model');
+// &repeat=N runs it N times in the same worker (for timing warm runs).
+if (model) for (let i = 0; i < Number(params.get('repeat') ?? 1); i++) run(await (await fetch(model)).arrayBuffer());
+</script>

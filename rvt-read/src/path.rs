@@ -72,6 +72,42 @@ impl Tree {
     }
 }
 
+/// One supply path chosen for a first look at a model.
+pub struct CriticalPath {
+    pub tree: Tree,
+    pub system: String,
+    pub terminal: usize,
+    /// Root to terminal, inclusive.
+    pub path: Vec<usize>,
+    /// Flow through each node of `tree`, m^3/s.
+    pub flow: Vec<f64>,
+}
+
+fn has_flow(net: &Network, n: usize) -> bool {
+    net.nodes[n].kind == NodeKind::Terminal && net.nodes[n].flow.is_some_and(|q| q > 0.0)
+}
+
+/// Of every unit's supply systems, the one serving the most terminals with a
+/// design flow, out to its farthest such terminal.
+pub fn critical_path(net: &Network) -> Option<CriticalPath> {
+    let (tree, system) = net
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.kind == NodeKind::Equipment)
+        .flat_map(|(e, n)| n.systems.iter().filter(|s| s.contains("Supply")).map(move |s| (e, s)))
+        .map(|(e, s)| (tree(net, e, s), s.clone()))
+        .max_by_key(|(tree, _)| tree.order.iter().filter(|&&n| has_flow(net, n)).count())?;
+    let terminal = *tree
+        .order
+        .iter()
+        .filter(|&&n| has_flow(net, n))
+        .max_by_key(|&&t| tree.path_to(t).map_or(0, |p| p.len()))?;
+    let path = tree.path_to(terminal)?;
+    let flow = tree.flows(net);
+    Some(CriticalPath { tree, system, terminal, path, flow })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
