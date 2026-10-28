@@ -1,0 +1,356 @@
+{
+ "note": "Adversarial names written after the rules, to find false positives. Regression set.",
+ "items": [
+  {
+   "category": "Duct Accessories",
+   "family": "Fire Rated Access Door",
+   "type": "300x300",
+   "accept": [
+    "coupling",
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "Intumescent Collar",
+   "type": "150",
+   "accept": [
+    "other_unknown",
+    "coupling"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "Duct Smoke Detector",
+   "type": "Standard",
+   "accept": [
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "Kitchen Exhaust Hood",
+   "type": "3000",
+   "accept": [
+    "other_unknown",
+    "grille_or_register",
+    "diffuser_ceiling"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "Capture Jet",
+   "type": "Standard",
+   "accept": [
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Tap - Round - Capped",
+   "type": "150",
+   "accept": [
+    "branch_takeoff",
+    "end_cap"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "Splitter Damper",
+   "type": "400x300",
+   "accept": [
+    "volume_damper"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "Sound Trap",
+   "type": "1200",
+   "accept": [
+    "silencer",
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Air Source Heat Pump - Monobloc",
+   "type": "16kW",
+   "accept": [
+    "not_airside",
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Heat Pump Water Heater",
+   "type": "300L",
+   "accept": [
+    "not_airside",
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Fan Convector",
+   "type": "FC-1",
+   "accept": [
+    "fan_coil_or_heat_pump",
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Fan Heater - Door Curtain",
+   "type": "3kW",
+   "accept": [
+    "other_unknown",
+    "not_airside"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Exhaust Fan Speed Controller",
+   "type": "EFC",
+   "accept": [
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Condensate Pump",
+   "type": "CP-1",
+   "accept": [
+    "not_airside"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Return Air Plenum Box",
+   "type": "RAP-1",
+   "accept": [
+    "plenum"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Elbow Transition - Rect to Round",
+   "type": "Standard",
+   "accept": [
+    "transition",
+    "elbow_mitred",
+    "elbow_radius"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Rectangular Duct Cross Over",
+   "type": "Standard",
+   "accept": [
+    "elbow_mitred",
+    "other_unknown",
+    "transition"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Reducing Tee",
+   "type": "Standard",
+   "accept": [
+    "tee_or_wye"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Round Tap Elbow",
+   "type": "150",
+   "accept": [
+    "branch_takeoff",
+    "elbow_radius"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "Wall Mounted Diffuser - Jet",
+   "type": "300",
+   "accept": [
+    "grille_or_register",
+    "diffuser_ceiling"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "Floor Grille - Linear Slot",
+   "type": "1200",
+   "accept": [
+    "grille_or_register",
+    "diffuser_ceiling"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "Roof Mounted Supply Diffuser",
+   "type": "Standard",
+   "accept": [
+    "external_cap_or_louvre",
+    "diffuser_ceiling",
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "Radiant Panel",
+   "type": "1200x600",
+   "accept": [
+    "other_unknown",
+    "not_airside"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "Supply Valve - Disc",
+   "type": "125",
+   "accept": [
+    "diffuser_ceiling",
+    "grille_or_register"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "Cone Diffuser",
+   "type": "300",
+   "accept": [
+    "diffuser_ceiling"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "Fan Coil Filter Box",
+   "type": "FCU-1",
+   "accept": [
+    "other_unknown",
+    "plenum"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "Duct Heater - Electric - Fan Assisted",
+   "type": "6kW",
+   "accept": [
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "Fire Damper Access Door",
+   "type": "300x300",
+   "accept": [
+    "coupling",
+    "other_unknown",
+    "fire_smoke_damper"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "VAV Controller",
+   "type": "Standard",
+   "accept": [
+    "other_unknown",
+    "vav_terminal_unit"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Tank Exhaust Fan",
+   "type": "EF-2",
+   "accept": [
+    "fan"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Offset Bend - Rect",
+   "type": "300",
+   "accept": [
+    "elbow_mitred",
+    "elbow_radius",
+    "other_unknown",
+    "transition"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Square Throat Elbow",
+   "type": "Standard",
+   "accept": [
+    "elbow_mitred"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Rectangular Elbow - Mitered - With Vanes",
+   "type": "Standard",
+   "accept": [
+    "elbow_mitred_vanes"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Round Elbow - Mitered",
+   "type": "Standard",
+   "accept": [
+    "elbow_mitred"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "Plenum Rated Cable Tray",
+   "type": "Standard",
+   "accept": [
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Pump Room Supply Fan",
+   "type": "SF-2",
+   "accept": [
+    "fan"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Boiler Flue Fan",
+   "type": "Standard",
+   "accept": [
+    "fan",
+    "not_airside",
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Cooling Coil",
+   "type": "CC-1",
+   "accept": [
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "AHU Silencer",
+   "type": "Standard",
+   "accept": [
+    "silencer"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "Fan Section - AHU",
+   "type": "Standard",
+   "accept": [
+    "fan",
+    "air_handling_unit"
+   ]
+  }
+ ]
+}

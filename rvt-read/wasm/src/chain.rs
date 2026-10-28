@@ -1,8 +1,9 @@
 //! Map a path through the duct network onto `wall-duct-core` blocks.
 //!
-//! Element types come from family names by keyword here; in the tool that is
-//! the classifier's job (`eval/`).
+//! Element types come from `duct_heal::classify`; a fitting it cannot name is
+//! passed through, and the report lists it for the classifier.
 
+use duct_heal::classify::{classify_node, ElementType};
 use duct_heal::{Network, NodeKind};
 use wall_duct_core::model::BlockParams;
 
@@ -42,7 +43,7 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64]) -> Vec<Mapped> {
                 format!("{:.0} -> {:.0} L/s", flow[prev] * 1000.0, flow[n] * 1000.0),
             );
         }
-        let family = node.family.to_ascii_lowercase();
+        let ty = classify_node(node);
         match node.kind {
             NodeKind::Duct { start, end, width, height } => push(
                 BlockParams::Segment { length_m: dist(start, end), width_m: width, height_m: height, lining_m: 0.0 },
@@ -58,9 +59,23 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64]) -> Vec<Mapped> {
                     );
                 }
             }
-            NodeKind::Fitting if family.contains("elbow") || family.contains("bend") => {
+            NodeKind::Fitting
+                if matches!(ty, Some(ElementType::ElbowMitred | ElementType::ElbowMitredVanes | ElementType::ElbowRadius)) =>
+            {
                 if let Some((w, h)) = section(net, path, i) {
                     push(BlockParams::Bend { width_m: w, height_m: h }, node.family.clone());
+                }
+            }
+            // A silencer from the IFC: its length is its longest extent. The
+            // engine's attenuator is a rectangular splitter unit; the free
+            // area and splitter are stand-ins until the model carries data.
+            NodeKind::Fitting if ty == Some(ElementType::Silencer) => {
+                let length = node.ifc.as_ref().and_then(|i| i.size).map(|s| s[0].max(s[1]).max(s[2]));
+                if let (Some(length_m), Some((w, h))) = (length, section(net, path, i)) {
+                    push(
+                        BlockParams::Attenuator { length_m, width_m: w, height_m: h, free_area_ratio: 0.5, splitter_m: 0.1 },
+                        format!("{}, {:.2} m", node.family, length_m),
+                    );
                 }
             }
             NodeKind::Terminal => {
@@ -69,7 +84,8 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64]) -> Vec<Mapped> {
                 }
             }
             // Takeoffs, tees and transitions: division is the Branch above;
-            // their own loss and regen are not modelled yet.
+            // their own loss and regen are not modelled yet, nor are dampers
+            // (the report warns).
             _ => {}
         }
     }

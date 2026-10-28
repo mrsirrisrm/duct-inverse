@@ -3,11 +3,11 @@ import init, { analyse } from './pkg/duct_pipeline.js';
 
 const ready = init();
 
-self.onmessage = async ({ data: bytes }) => {
+self.onmessage = async ({ data: { rvt, ifc } }) => {
   try {
     const wasm = await ready;
     const start = performance.now();
-    const report = JSON.parse(analyse(new Uint8Array(bytes)));
+    const report = JSON.parse(analyse(new Uint8Array(rvt), ifc && new Uint8Array(ifc)));
     self.postMessage({
       report,
       ms: Math.round(performance.now() - start),

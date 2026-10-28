@@ -1,6 +1,8 @@
 """Score Jev on mapping Revit family/type names to acoustic element types.
 
-    python3 eval/jev_eval.py [out.json]
+    python3 eval/jev_eval.py [out.json] [items.json]
+
+Items default to element_types.json; labels always come from it.
 
 Reads TYPESAFE_API_KEY from the environment or from the repo's .env.
 Runs every item twice, with the label order reversed on the second pass
@@ -36,7 +38,21 @@ def api_key():
     sys.exit("TYPESAFE_API_KEY not set (environment or duct-inverse/.env)")
 
 
+# Labels each Revit category can hold; the rest are never offered.
+INLINE = {"elbow_mitred", "elbow_mitred_vanes", "elbow_radius", "branch_takeoff", "tee_or_wye", "transition", "end_cap",
+          "coupling", "volume_damper", "fire_smoke_damper", "silencer", "plenum", "vav_terminal_unit", "fan", "other_unknown"}
+ALLOWED = {
+    "Duct Fittings": INLINE,
+    "Duct Accessories": INLINE,
+    "Air Terminals": {"diffuser_ceiling", "grille_or_register", "external_cap_or_louvre", "other_unknown"},
+    "Mechanical Equipment": {"vav_terminal_unit", "fan", "air_handling_unit", "fan_coil_or_heat_pump", "not_airside",
+                             "silencer", "plenum", "other_unknown"},
+}
+
+
 def ask(key, item, labels):
+    allowed = ALLOWED.get(item["category"])
+    labels = {k: v for k, v in labels.items() if allowed is None or k in allowed}
     body = json.dumps({
         "model": MODEL,
         "state": {"revit_category": item["category"], "family": item["family"], "type": item["type"]},
@@ -67,7 +83,8 @@ def run(key, items, labels):
 
 def main():
     spec = json.loads((HERE / "element_types.json").read_text())
-    items, labels = spec["items"], spec["labels"]
+    labels = spec["labels"]
+    items = json.loads(pathlib.Path(sys.argv[2]).read_text())["items"] if len(sys.argv) > 2 else spec["items"]
     key = api_key()
     forward = run(key, items, labels)
     reverse = run(key, items, dict(reversed(list(labels.items()))))
@@ -88,8 +105,8 @@ def main():
     model = forward[0]["model"]
 
     print(f"model {model}, {len(rows)} items, 2 passes")
-    for name in ("real", "synthetic"):
-        subset = [r for r in rows if r["set"] == name]
+    for name in sorted({r.get("set", "all") for r in rows}):
+        subset = [r for r in rows if r.get("set", "all") == name]
         right = sum(r["choice"] in r["accept"] for r in subset)
         right_rev = sum(r["choice_reversed"] in r["accept"] for r in subset)
         print(f"  {name:9s} {right}/{len(subset)} correct (reversed order {right_rev}/{len(subset)})")

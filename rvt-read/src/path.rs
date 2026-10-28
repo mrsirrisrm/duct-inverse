@@ -87,15 +87,16 @@ fn has_flow(net: &Network, n: usize) -> bool {
     net.nodes[n].kind == NodeKind::Terminal && net.nodes[n].flow.is_some_and(|q| q > 0.0)
 }
 
-/// Of every unit's supply systems, the one serving the most terminals with a
-/// design flow, out to its farthest such terminal.
+/// Of every unit's systems, the one serving the most terminals with a design
+/// flow, out to its farthest such terminal. Any system: fan noise reaches a
+/// room down exhaust ducts too, and system names are in the model's language.
 pub fn critical_path(net: &Network) -> Option<CriticalPath> {
     let (tree, system) = net
         .nodes
         .iter()
         .enumerate()
         .filter(|(_, n)| n.kind == NodeKind::Equipment)
-        .flat_map(|(e, n)| n.systems.iter().filter(|s| s.contains("Supply")).map(move |s| (e, s)))
+        .flat_map(|(e, n)| n.systems.iter().map(move |s| (e, s)))
         .map(|(e, s)| (tree(net, e, s), s.clone()))
         .max_by_key(|(tree, _)| tree.order.iter().filter(|&&n| has_flow(net, n)).count())?;
     let terminal = *tree
@@ -122,6 +123,7 @@ mod tests {
             systems: vec![system.into()],
             location: None,
             flow,
+            ifc: None,
         }
     }
 

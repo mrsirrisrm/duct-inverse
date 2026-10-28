@@ -10,12 +10,14 @@
 //! Conventions (as `wall-duct-core`): lengths in metres, flows in m^3/s.
 
 pub mod build;
+pub mod classify;
 pub mod graph;
 pub mod heal;
+pub mod ifc;
 pub mod network;
 pub mod path;
 pub mod rvt_json;
 #[cfg(feature = "rvt")]
 pub mod rvt_native;
 
-pub use network::{EdgeSource, Network, Node, NodeKind};
+pub use network::{EdgeSource, IfcInfo, Network, Node, NodeKind};

@@ -1,0 +1,389 @@
+{
+ "note": "Distinct names from Granlund's BIM4LCA Housing Concrete HVAC model (MagiCAD for Revit 2024; VTT, CC BY-SA 4.0). Labels from its IFC export's classes and types and the engineer's ventilation schedule; accessories rvt-rs did not decode in this file are taken from the IFC. Not used to tune the rules.",
+ "items": [
+  {
+   "category": "Air Terminals",
+   "family": "CIRC-ROOF-HOOD",
+   "type": "circ-roof-hood-100",
+   "accept": [
+    "external_cap_or_louvre"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "(HPF1) - STEC-_-10b-c-0-1+BOGA EI120",
+   "type": "STEC-1-10b-c-0-1+BOGA-01-1-6-2",
+   "accept": [
+    "fan",
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(IOUPL1) - UPSI-L",
+   "type": "UPSI-160-L",
+   "accept": [
+    "external_cap_or_louvre"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "(IVK1) - Flexit - Nordic CL2 - (OIK)",
+   "type": "Flexit - Nordic CL2 - (OIK)",
+   "accept": [
+    "air_handling_unit"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "(IVK2) - Flexit - Nordic CL2 - (VAS)",
+   "type": "Flexit - Nordic CL2 - (VAS)",
+   "accept": [
+    "air_handling_unit"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(LKU1) - ILOX Basic",
+   "type": "ILOX Basic-500",
+   "accept": [
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(P1) - KSO-C",
+   "type": "KSO-100-C",
+   "accept": [
+    "diffuser_ceiling",
+    "grille_or_register"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(P1) - KSO-C",
+   "type": "KSO-125-C",
+   "accept": [
+    "diffuser_ceiling",
+    "grille_or_register"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(SI1) - ORTOa N_",
+   "type": "ORTOa 500 DOUBLE N",
+   "accept": [
+    "grille_or_register"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(T1) - CLIK",
+   "type": "CLIK-100",
+   "accept": [
+    "diffuser_ceiling",
+    "grille_or_register"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(T1) - CLIK",
+   "type": "CLIK-125",
+   "accept": [
+    "diffuser_ceiling",
+    "grille_or_register"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(T2) - KTS-C",
+   "type": "KTS-100-0-C",
+   "accept": [
+    "diffuser_ceiling",
+    "grille_or_register"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(T2) - KTS-C",
+   "type": "KTS-125-1-C",
+   "accept": [
+    "diffuser_ceiling",
+    "grille_or_register"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(T4) - BDKU",
+   "type": "BDKU-016",
+   "accept": [
+    "diffuser_ceiling",
+    "grille_or_register"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(US1) - RV",
+   "type": "RV 1200x300",
+   "accept": [
+    "external_cap_or_louvre"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "(US2) - USAV",
+   "type": "USAV-200",
+   "accept": [
+    "external_cap_or_louvre",
+    "grille_or_register"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "Cone-netting-circular",
+   "type": "Cone-netting-circular-125",
+   "accept": [
+    "diffuser_ceiling",
+    "grille_or_register"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "HVAC_Reservation_Heating_(GRA)",
+   "type": "GRA - HVAC - 01 - Reservation Heating",
+   "accept": [
+    "other_unknown",
+    "not_airside"
+   ]
+  },
+  {
+   "category": "Air Terminals",
+   "family": "KATJET",
+   "type": "KATJET-315-H2",
+   "accept": [
+    "external_cap_or_louvre"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "KON21",
+   "type": "KON21-286-800-AB_15",
+   "accept": [
+    "not_airside"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "MC_ConnectionNode_Outdoor_Supply_Air_Round",
+   "type": "MC_ConnectionNode_Outdoor_Supply_Air_Round",
+   "accept": [
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "MC_ConnectionNode_Sewer",
+   "type": "MC_ConnectionNode_Sewer",
+   "accept": [
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "MagiCAD_Circulation_Point",
+   "type": "MagiCAD_Circulation_Point",
+   "accept": [
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Pyöreä kanava FeZn - Kulmayhde",
+   "type": "Pyöreä kanava FeZn - Kulmayhde",
+   "accept": [
+    "elbow_radius"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Pyöreä kanava FeZn - Liitinyhde",
+   "type": "Pyöreä kanava FeZn - Liitinyhde",
+   "accept": [
+    "coupling"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Pyöreä kanava FeZn - Lähtökaulus",
+   "type": "Pyöreä kanava FeZn - Lähtökaulus",
+   "accept": [
+    "branch_takeoff",
+    "tee_or_wye"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Pyöreä kanava FeZn - Muuntoyhde 01",
+   "type": "Pyöreä kanava FeZn - Muuntoyhde 01",
+   "accept": [
+    "transition"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Pyöreä kanava FeZn - Muuntoyhde 02",
+   "type": "Pyöreä kanava FeZn - Muuntoyhde 02",
+   "accept": [
+    "transition"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Pyöreä kanava FeZn - T-yhde",
+   "type": "Pyöreä kanava FeZn - T-yhde",
+   "accept": [
+    "tee_or_wye"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Pyöreä kanava FeZn - Tulppa",
+   "type": "Pyöreä kanava FeZn - Tulppa",
+   "accept": [
+    "end_cap"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Pyöreä kanava FeZn - X-yhde",
+   "type": "Pyöreä kanava FeZn - X-yhde",
+   "accept": [
+    "tee_or_wye"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "RAD21",
+   "type": "C21-400-1000_15-1",
+   "accept": [
+    "not_airside"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "RAD21",
+   "type": "C21-400-1100_15-1",
+   "accept": [
+    "not_airside"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Suorakaidekanava FeZn - Muuntoyhde 01",
+   "type": "Suorakaidekanava FeZn - Muuntoyhde 01",
+   "accept": [
+    "transition"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Suorakaidekanava FeZn - Muuntoyhde 02",
+   "type": "Suorakaidekanava FeZn - Muuntoyhde 02",
+   "accept": [
+    "transition"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Suorakaidekanava FeZn - T-yhde",
+   "type": "Suorakaidekanava FeZn - T-yhde",
+   "accept": [
+    "tee_or_wye"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Suorakaidekanava FeZn - Tulppa",
+   "type": "Suorakaidekanava FeZn - Tulppa",
+   "accept": [
+    "end_cap"
+   ]
+  },
+  {
+   "category": "Mechanical Equipment",
+   "family": "TK01_0",
+   "type": "TK01_2040x780x1900",
+   "accept": [
+    "air_handling_unit",
+    "fan"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "KVDPX-125-1000-1",
+   "type": "KVDPX-125-1000-1",
+   "accept": [
+    "silencer"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "KVDPX-160-600-1",
+   "type": "KVDPX-160-600-1",
+   "accept": [
+    "silencer"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "ETPR-E-1-125-03-1",
+   "type": "ETPR-E-1-125-03-1",
+   "accept": [
+    "fire_smoke_damper"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "IRIS-125",
+   "type": "IRIS-125",
+   "accept": [
+    "volume_damper"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "BDEP-10-016-000",
+   "type": "BDEP-10-016-000",
+   "accept": [
+    "volume_damper"
+   ]
+  },
+  {
+   "category": "Duct Accessories",
+   "family": "filter-circ-duct-160",
+   "type": "filter-circ-duct-160",
+   "accept": [
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Access-panel-125-duct part",
+   "type": "Access-panel-125-duct part",
+   "accept": [
+    "coupling",
+    "other_unknown"
+   ]
+  },
+  {
+   "category": "Duct Fittings",
+   "family": "Access-panel-160-circ plug out",
+   "type": "Access-panel-160-circ plug out",
+   "accept": [
+    "coupling",
+    "other_unknown",
+    "end_cap"
+   ]
+  }
+ ]
+}

@@ -111,6 +111,7 @@ pub fn build<'a>(elements: impl IntoIterator<Item = Element<'a>>, decoded: &Hash
             systems,
             location: element.point(["m_locationX", "m_locationY", "m_locationZ"]),
             flow: element.flow_cfs.map(|q| q * CFS),
+            ifc: None,
         });
     }
 
@@ -127,6 +128,7 @@ pub fn build<'a>(elements: impl IntoIterator<Item = Element<'a>>, decoded: &Hash
                 systems: Vec::new(),
                 location: None,
                 flow: None,
+                ifc: None,
             }),
         };
         let a = net.find(a).expect("join source is a built node");

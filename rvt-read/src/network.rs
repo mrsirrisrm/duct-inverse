@@ -27,6 +27,19 @@ pub struct Node {
     pub location: Option<Point>,
     /// Design airflow, m^3/s, where the family carries one.
     pub flow: Option<f64>,
+    /// What an IFC export of the model says the element is, once merged.
+    pub ifc: Option<IfcInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IfcInfo {
+    /// Specific class, upper case ("IFCDUCTSILENCER").
+    pub class: String,
+    /// Predefined type, "" if none.
+    pub predefined: String,
+    pub description: String,
+    /// Extent in the element's own frame, metres, for non-straight elements.
+    pub size: Option<Point>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,6 +48,8 @@ pub enum EdgeSource {
     Recorded,
     /// Takeoff to the main duct its branch axis runs into.
     TakeoffAxis { candidates: usize },
+    /// A duct that ends inside an element no recorded join reaches (IFC).
+    EndInside,
 }
 
 #[derive(Debug, Clone, Copy)]

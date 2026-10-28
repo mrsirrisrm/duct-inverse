@@ -6,10 +6,11 @@
 
 pub mod chain;
 
-use duct_heal::{graph, heal, path, rvt_native, Network, NodeKind};
+use duct_heal::classify::{classify_node, ElementType};
+use duct_heal::{graph, heal, ifc, path, rvt_native, Network, NodeKind};
 use serde_json::{json, Value};
 use wall_duct_core::metrics::octave::{N_BANDS, OCTAVE_BANDS_HZ};
-use wall_duct_core::model::{BlockParams, DuctSystem, Params};
+use wall_duct_core::model::{BlockParams, DuctSystem, Params, MAX_BLOCKS};
 use wall_duct_core::physics::source::{source_pwl, SourceType};
 use wasm_bindgen::prelude::*;
 
@@ -46,12 +47,28 @@ fn clock_ms() -> f64 {
     }
 }
 
+/// Rule coverage over the fittings, terminals and equipment, by element, and
+/// the distinct names the rules left: the classifier's queue.
+fn classified(net: &Network) -> Value {
+    let mut left = std::collections::BTreeMap::<(&str, &str), usize>::new();
+    let (mut total, mut named) = (0, 0);
+    for n in net.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Fitting | NodeKind::Terminal | NodeKind::Equipment)) {
+        total += 1;
+        match classify_node(n) {
+            Some(_) => named += 1,
+            None => *left.entry((&n.family, &n.type_name)).or_default() += 1,
+        }
+    }
+    let queue: Vec<Value> = left.iter().map(|((f, t), k)| json!({ "family": f, "type": t, "elements": k })).collect();
+    json!({ "elements": total, "by_rule": named, "for_classifier": queue })
+}
+
 fn bands(spectrum: impl Iterator<Item = f64>) -> Vec<f64> {
     spectrum.map(|v| (v * 10.0).round() / 10.0).collect()
 }
 
-/// The report for one Revit file's bytes.
-pub fn analyse_bytes(bytes: Vec<u8>, control: &rvt::control::WalkerControl) -> Result<Value, String> {
+/// The report for one Revit file's bytes, with its IFC export's if given.
+pub fn analyse_bytes(bytes: Vec<u8>, ifc_bytes: Option<&[u8]>, control: &rvt::control::WalkerControl) -> Result<Value, String> {
     let mut stage = clock_ms();
     let mut lap = || {
         let t = clock_ms();
@@ -66,6 +83,15 @@ pub fn analyse_bytes(bytes: Vec<u8>, control: &rvt::control::WalkerControl) -> R
     .map_err(|e| e.to_string())?;
     let mut warnings = Vec::new();
     let recorded = connectivity(&net);
+    let ifc = ifc_bytes.map(|b| {
+        let elements = ifc::parse(b);
+        let parse_ms = lap();
+        let m = ifc::merge(&mut net, &elements);
+        json!({
+            "parse_ms": parse_ms, "elements": m.elements, "matched": m.matched, "duct_geometry": m.geometry,
+            "added": m.added, "joined_inside": m.joined, "connectivity": connectivity(&net),
+        })
+    });
     let takeoffs = heal::join_takeoffs(&mut net);
     let healed = connectivity(&net);
     let heal_ms = lap();
@@ -73,7 +99,7 @@ pub fn analyse_bytes(bytes: Vec<u8>, control: &rvt::control::WalkerControl) -> R
     let cp = path::critical_path(&net);
     let path_ms = lap();
     let Some(cp) = cp else {
-        return Ok(json!({ "recorded": recorded, "healed": healed, "path": null }));
+        return Ok(json!({ "recorded": recorded, "ifc": ifc, "healed": healed, "classified": classified(&net), "path": null }));
     };
     let unit = &net.nodes[cp.tree.root];
     let q_unit = cp.flow[cp.tree.root];
@@ -86,7 +112,23 @@ pub fn analyse_bytes(bytes: Vec<u8>, control: &rvt::control::WalkerControl) -> R
             q_unit * 1000.0
         ));
     }
+    for &n in &cp.path {
+        let node = &net.nodes[n];
+        let ty = classify_node(node);
+        match ty {
+            Some(ElementType::VolumeDamper | ElementType::FireSmokeDamper | ElementType::VavTerminalUnit | ElementType::Plenum) => {
+                warnings.push(format!("{} {} ({}) is on the path but not modelled", ty.unwrap().label(), node.id, node.family))
+            }
+            None if node.kind == NodeKind::Fitting => {
+                warnings.push(format!("fitting {} ({} | {}) is unclassified and passed through", node.id, node.family, node.type_name))
+            }
+            _ => {}
+        }
+    }
     let mapped = chain::chain(&net, &cp.path, &cp.flow);
+    if mapped.len() > MAX_BLOCKS {
+        return Err(format!("critical path maps to {} blocks; the engine takes {MAX_BLOCKS}", mapped.len()));
+    }
     let params = Params {
         // No sound data in the model; the FCU shape stands in for the unit.
         source_type: SourceType::FcuCeiling,
@@ -108,6 +150,7 @@ pub fn analyse_bytes(bytes: Vec<u8>, control: &rvt::control::WalkerControl) -> R
         let velocity = match m.block {
             BlockParams::Segment { width_m, height_m, .. }
             | BlockParams::Bend { width_m, height_m }
+            | BlockParams::Attenuator { width_m, height_m, .. }
             | BlockParams::Diffuser { width_m, height_m } => Some(q.value / (width_m * height_m)),
             _ => None,
         };
@@ -132,8 +175,10 @@ pub fn analyse_bytes(bytes: Vec<u8>, control: &rvt::control::WalkerControl) -> R
     Ok(json!({
         "timings_ms": { "decode": decode, "heal": heal_ms, "path": path_ms, "engine": engine_ms },
         "recorded": recorded,
+        "ifc": ifc,
         "takeoffs": { "found": takeoffs.takeoffs, "joined": takeoffs.joined, "ambiguous": takeoffs.ambiguous, "unmatched": takeoffs.unmatched },
         "healed": healed,
+        "classified": classified(&net),
         "path": {
             "unit": { "id": unit.id, "family": unit.family, "air_flow_l_s": unit.flow.map(|q| q * 1000.0) },
             "system": cp.system,
@@ -154,16 +199,17 @@ pub fn analyse_bytes(bytes: Vec<u8>, control: &rvt::control::WalkerControl) -> R
             "source: generic FCU spectrum, 0 dB offset (no sound data in the model)",
             "room: 50 m3, RT60 0.6 s, receiver 2 m",
             "ducts unlined; takeoff, tee and transition regen and loss not modelled",
-            "element types from family-name keywords",
+            "silencers: length from the IFC, section from the duct, free area 0.5 and 100 mm splitters assumed",
+            "element types from family-name rules; names they leave are listed under classified",
         ],
         "warnings": warnings,
     }))
 }
 
-/// JS entry point: `analyse(bytes: Uint8Array) -> string` (the JSON report).
-/// Run it in a Web Worker: a 40 MB model takes 10 to 20 s.
+/// JS entry point: `analyse(rvt: Uint8Array, ifc?: Uint8Array) -> string`
+/// (the JSON report). Run it in a Web Worker: a 40 MB model takes 10 to 20 s.
 #[wasm_bindgen]
-pub fn analyse(bytes: &[u8]) -> Result<String, JsValue> {
-    let report = analyse_bytes(bytes.to_vec(), &rvt::control::WalkerControl::new()).map_err(|e| JsValue::from_str(&e))?;
+pub fn analyse(bytes: &[u8], ifc: Option<Vec<u8>>) -> Result<String, JsValue> {
+    let report = analyse_bytes(bytes.to_vec(), ifc.as_deref(), &rvt::control::WalkerControl::new()).map_err(|e| JsValue::from_str(&e))?;
     Ok(report.to_string())
 }

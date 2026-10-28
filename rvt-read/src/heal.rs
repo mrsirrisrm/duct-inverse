@@ -144,6 +144,7 @@ mod tests {
             systems: vec!["Supply Air 1".into()],
             location: Some(at),
             flow: None,
+            ifc: None,
         }
     }
 

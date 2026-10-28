@@ -42,7 +42,7 @@ use crate::physics::{
 /// each straight, bend and branch as its own block, runs to 20 or so. The
 /// cost of being oversized is purely a larger sensitivity vector carried
 /// through the forward pass.
-pub const MAX_BLOCKS: usize = 32;
+pub const MAX_BLOCKS: usize = 64;
 
 /// Slots reserved per block (largest variant is Attenuator with 5 params).
 pub const MAX_BLOCK_SLOTS: usize = 5;
