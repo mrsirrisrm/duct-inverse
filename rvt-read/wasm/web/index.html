@@ -8,9 +8,9 @@
   td:nth-child(2), th:nth-child(2) { text-align: left; }
   pre { white-space: pre-wrap; }
 </style>
-<p>Pick a Revit file, and its IFC export if you have one. They are read here, in this tab; nothing is uploaded.</p>
+<p>Pick a Revit file, its IFC export, or both. They are read here, in this tab; nothing is uploaded.</p>
 <label>Revit <input type="file" id="rvt" accept=".rvt"></label>
-<label>IFC (optional) <input type="file" id="ifc" accept=".ifc"></label>
+<label>IFC <input type="file" id="ifc" accept=".ifc"></label>
 <button id="go">Analyse</button>
 <p id="status"></p>
 <div id="out"></div>
@@ -22,8 +22,9 @@ const status = document.getElementById('status');
 const out = document.getElementById('out');
 
 async function run(rvt, ifc) {
-  status.textContent = `analysing ${((rvt.byteLength + (ifc?.byteLength ?? 0)) / 1e6).toFixed(0)} MB…`;
-  worker.postMessage({ rvt, ifc }, [rvt, ...(ifc ? [ifc] : [])]);
+  const files = [rvt, ifc].filter(Boolean);
+  status.textContent = `analysing ${(files.reduce((n, f) => n + f.byteLength, 0) / 1e6).toFixed(0)} MB…`;
+  worker.postMessage({ rvt, ifc }, files);
 }
 
 worker.onmessage = ({ data }) => {
@@ -40,7 +41,7 @@ worker.onmessage = ({ data }) => {
   out.innerHTML = `
     <p>Islands ${r.recorded.islands} → ${r.healed.islands}; terminals reaching a unit
       ${r.recorded.terminals_with_equipment} → ${r.healed.terminals_with_equipment} of ${r.healed.terminals}.
-      ${r.ifc ? `IFC: ${r.ifc.matched} elements matched, ${r.ifc.duct_geometry} ducts given geometry, ${r.ifc.added} added, ${r.ifc.joined_inside} joins.` : ''}</p>
+      ${r.ifc ? `IFC: ${r.ifc.matched} elements matched, ${r.ifc.duct_geometry} ducts given geometry, ${r.ifc.added} added, ${r.ifc.ports} port joins, ${r.ifc.joined_inside} ends-inside joins.` : ''}</p>
     <p>${p.unit.family} (${p.system}) → ${p.terminal.family}: ${p.elements} elements, ${p.blocks.length} blocks,
       <b>NC ${p.nc}</b></p>
     <table><tr><th>#</th><th>block</th><th>L/s</th><th>m/s</th>${p.bands_hz.map(f => `<th>${f}</th>`).join('')}</tr>
@@ -52,9 +53,9 @@ worker.onmessage = ({ data }) => {
 
 const picked = id => document.getElementById(id).files[0]?.arrayBuffer();
 document.getElementById('go').onclick = async () => run(await picked('rvt'), await picked('ifc'));
-// ?model=<url>[&ifc=<url>] loads files without the pickers (for automated runs).
+// ?model=<url>[&ifc=<url>], or ?ifc=<url> alone, loads files without the pickers (for automated runs).
 const model = params.get('model');
 const load = async url => url && (await fetch(url)).arrayBuffer();
 // &repeat=N runs it N times in the same worker (for timing warm runs).
-if (model) for (let i = 0; i < Number(params.get('repeat') ?? 1); i++) run(await load(model), await load(params.get('ifc')));
+if (model || params.has('ifc')) for (let i = 0; i < Number(params.get('repeat') ?? 1); i++) run(await load(model), await load(params.get('ifc')));
 </script>

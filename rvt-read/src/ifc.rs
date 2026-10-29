@@ -1,11 +1,12 @@
 //! Duct-domain elements from an IFC file, and their merge into a network
-//! built from the Revit file.
+//! built from the Revit file, or into an empty one when there is no Revit file.
 //!
 //! An IFC export fills what rvt-rs leaves: geometry where it decodes none,
 //! accessories it does not decode, and IFC's own class for each element.
-//! Revit writes its element id as the IFC Tag, so the two join by id. The
-//! export may carry no port connections (Revit's default), so an element only
-//! the IFC has is joined to the ducts that end inside it.
+//! Revit writes its element id as the IFC Tag, so the two join by id. Port
+//! connections, where the export has them, are recorded joins. Revit's
+//! default export has none, so an element no join reaches is joined to the
+//! ducts that end inside it.
 //!
 //! Reads ISO 10303-21 text: entities are parsed on demand, geometry is only
 //! as much as the network needs (an axis and section for straight ducts, the
@@ -13,6 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::build::CFS;
 use crate::network::{EdgeSource, IfcInfo, Network, Node, NodeKind, Point};
 
 /// Duct-domain classes, IFC4 and their IFC2x3 equivalents' type names.
@@ -51,6 +53,12 @@ pub struct IfcElement {
     pub name: String,
     pub description: String,
     pub shape: Option<Shape>,
+    /// System names from the "System Name" property.
+    pub systems: Vec<String>,
+    /// Design airflow, m^3/s, from a "Flow" or "Air Flow" property.
+    pub flow: Option<f64>,
+    /// Elements (indices into `parse`'s result) a port of this one connects to.
+    pub joined: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -496,6 +504,31 @@ impl<'a> File<'a> {
         }
         body
     }
+
+    /// A single-value property the network uses, onto `e`. Revit writes its
+    /// parameters as bare reals in its internal units, so an IFCREAL flow is
+    /// ft^3/s; a typed flow is SI.
+    fn property(&self, id: u64, e: &mut IfcElement) {
+        let Some(("IFCPROPERTYSINGLEVALUE", raw)) = self.entities.get(&id).copied() else { return };
+        let a = Args::parse(raw);
+        let flow = |v: f64| {
+            if raw.contains("IFCREAL(") {
+                Some(v * CFS)
+            } else if raw.contains("IFCVOLUMETRICFLOWRATEMEASURE(") {
+                Some(v)
+            } else {
+                None
+            }
+        };
+        match (a.first(), a.get(2)) {
+            (Some(Arg::Str("System Name")), Some(Arg::Str(v))) => {
+                e.systems.extend(text(v).split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from))
+            }
+            (Some(Arg::Str("Flow")), Some(Arg::Num(v))) => e.flow = flow(*v).or(e.flow),
+            (Some(Arg::Str("Air Flow")), Some(Arg::Num(v))) if e.flow.is_none() => e.flow = flow(*v),
+            _ => {}
+        }
+    }
 }
 
 fn extent(points: &[Point]) -> Option<(Point, Point)> {
@@ -530,6 +563,7 @@ pub fn parse(bytes: &[u8]) -> Vec<IfcElement> {
         .collect();
     ids.sort_unstable();
     let mut out = Vec::new();
+    let mut index = HashMap::new();
     for id in ids {
         let (class, a) = file.get(id).expect("listed id");
         let ty = type_of.get(&id).and_then(|t| file.get(*t));
@@ -557,6 +591,7 @@ pub fn parse(bytes: &[u8]) -> Vec<IfcElement> {
             }
             _ => extent(&body.points).map(|(min, max)| Shape::Box { frame: place, min, max }),
         };
+        index.insert(id, out.len());
         out.push(IfcElement {
             tag: s(7).trim().parse().ok(),
             class,
@@ -564,7 +599,47 @@ pub fn parse(bytes: &[u8]) -> Vec<IfcElement> {
             name: s(2),
             description: s(3),
             shape,
+            systems: Vec::new(),
+            flow: None,
+            joined: Vec::new(),
         });
+    }
+
+    for (_, a) in file.of_class("IFCRELDEFINESBYPROPERTIES") {
+        let Some((_, set)) = a.get(5).and_then(Arg::id).and_then(|s| file.get(s)) else { continue };
+        for &k in a.get(4).map(Arg::list).unwrap_or(&[]).iter().filter_map(|o| index.get(&o.id()?)) {
+            for p in set.get(4).map(Arg::list).unwrap_or(&[]).iter().filter_map(Arg::id) {
+                file.property(p, &mut out[k]);
+            }
+        }
+    }
+
+    // A port's element: IFC2x3 relates them, IFC4 nests ports in the element.
+    let mut owner = HashMap::new();
+    for (_, a) in file.of_class("IFCRELCONNECTSPORTTOELEMENT") {
+        if let (Some(port), Some(element)) = (a.get(4).and_then(Arg::id), a.get(5).and_then(Arg::id)) {
+            owner.insert(port, element);
+        }
+    }
+    for (_, a) in file.of_class("IFCRELNESTS") {
+        let Some(element) = a.get(4).and_then(Arg::id) else { continue };
+        for port in a.get(5).map(Arg::list).unwrap_or(&[]).iter().filter_map(Arg::id) {
+            if file.entities.get(&port).is_some_and(|(c, _)| *c == "IFCDISTRIBUTIONPORT") {
+                owner.insert(port, element);
+            }
+        }
+    }
+    let element_of = |a: Option<&Arg>| a.and_then(Arg::id).and_then(|p| owner.get(&p)).and_then(|e| index.get(e)).copied();
+    for (_, a) in file.of_class("IFCRELCONNECTSPORTS") {
+        let (Some(x), Some(y)) = (element_of(a.get(4)), element_of(a.get(5))) else { continue };
+        // A realizing element (a flex duct, say) sits between the two.
+        match a.get(6).and_then(Arg::id).and_then(|r| index.get(&r)).copied() {
+            Some(r) => {
+                out[x].joined.push(r);
+                out[r].joined.push(y);
+            }
+            None => out[x].joined.push(y),
+        }
     }
     out
 }
@@ -587,6 +662,8 @@ pub struct MergeReport {
     pub geometry: usize,
     /// Elements only the IFC has, added as nodes.
     pub added: usize,
+    /// Joins the IFC's port connections record.
+    pub ports: usize,
     /// Duct ends joined to an element they lie inside.
     pub joined: usize,
 }
@@ -595,11 +672,13 @@ pub struct MergeReport {
 const INSIDE_TOL: f64 = 0.02;
 
 /// Merge IFC elements into `net`: geometry and IFC class onto the nodes they
-/// tag, new nodes for the rest. A node no recorded join reaches is then
-/// joined to every duct that ends inside it.
+/// tag, new nodes for the rest, and the joins their ports record. A node no
+/// join reaches is then joined to every duct that ends inside it. Merged into
+/// an empty network, this is the network of an IFC on its own.
 pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
     let mut report = MergeReport { elements: elements.len(), ..Default::default() };
     let mut boxes = Vec::new();
+    let mut nodes = Vec::with_capacity(elements.len());
     for (k, e) in elements.iter().enumerate() {
         let i = match e.tag.and_then(|t| net.find(t)) {
             Some(i) => {
@@ -620,10 +699,16 @@ pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
                 })
             }
         };
+        nodes.push(i);
         let node = &mut net.nodes[i];
         if node.kind == NodeKind::Undecoded {
             node.kind = kind_of_class(&e.class);
-            node.family = e.name.clone();
+            // Revit names an occurrence "Family:Type:Type:id".
+            let mut name = e.name.split(':');
+            node.family = name.next().unwrap_or_default().to_string();
+            node.type_name = name.next().unwrap_or_default().to_string();
+            node.systems = e.systems.clone();
+            node.flow = e.flow;
         }
         let mut size = None;
         match e.shape {
@@ -644,6 +729,11 @@ pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
             description: e.description.clone(),
             size,
         });
+    }
+    for (k, e) in elements.iter().enumerate() {
+        for &j in &e.joined {
+            report.ports += net.connect(nodes[k], nodes[j], EdgeSource::Recorded) as usize;
+        }
     }
 
     let joined: HashSet<usize> = net.edges.iter().flat_map(|e| [e.a, e.b]).collect();
@@ -695,5 +785,32 @@ mod tests {
         let close = |a: Point, b: Point| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-9);
         assert!(close(start, [1.0, 2.0, 3.0]) && close(end, [1.0, 2.0, 3.5]), "{start:?} -> {end:?}");
         assert!((width - 0.2).abs() < 1e-9 && (height - 0.2).abs() < 1e-9);
+    }
+
+    /// A duct and a terminal joined port to port (IFC2x3 style), the
+    /// terminal's flow and system in a Revit-style property set.
+    const PORTS: &str = "ISO-10303-21;\nDATA;\n\
+        #1=IFCDUCTSEGMENT('a',$,'Rectangular Duct:Supply:7',$,$,$,$,'7',$);\n\
+        #2=IFCAIRTERMINAL('b',$,'M_Supply Diffuser:600 x 600:8',$,$,$,$,'8',$);\n\
+        #3=IFCDISTRIBUTIONPORT('c',$,$,$,$,$,$,.SOURCE.);\n#4=IFCDISTRIBUTIONPORT('d',$,$,$,$,$,$,.SINK.);\n\
+        #5=IFCRELCONNECTSPORTTOELEMENT('e',$,$,$,#3,#1);\n#6=IFCRELCONNECTSPORTTOELEMENT('f',$,$,$,#4,#2);\n\
+        #7=IFCRELCONNECTSPORTS('g',$,$,$,#3,#4,$);\n\
+        #8=IFCPROPERTYSINGLEVALUE('Flow',$,IFCREAL(1.),$);\n\
+        #9=IFCPROPERTYSINGLEVALUE('System Name',$,IFCLABEL('Mechanical Supply Air 1'),$);\n\
+        #10=IFCPROPERTYSET('h',$,'Mechanical',$,(#8,#9));\n#11=IFCRELDEFINESBYPROPERTIES('i',$,$,$,(#2),#10);\nENDSEC;";
+
+    #[test]
+    fn ports_and_properties_make_an_ifc_only_network() {
+        let elements = parse(PORTS.as_bytes());
+        let terminal = &elements[1];
+        assert_eq!(terminal.systems, ["Mechanical Supply Air 1"]);
+        assert!((terminal.flow.unwrap() - CFS).abs() < 1e-12);
+
+        let mut net = Network::default();
+        let report = merge(&mut net, &elements);
+        assert_eq!((report.added, report.ports), (2, 1));
+        let t = &net.nodes[net.find(8).unwrap()];
+        assert_eq!((t.kind.clone(), t.family.as_str(), t.type_name.as_str()), (NodeKind::Terminal, "M_Supply Diffuser", "600 x 600"));
+        assert_eq!(net.neighbours()[net.find(7).unwrap()], [net.find(8).unwrap()]);
     }
 }

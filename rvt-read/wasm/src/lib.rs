@@ -67,8 +67,10 @@ fn bands(spectrum: impl Iterator<Item = f64>) -> Vec<f64> {
     spectrum.map(|v| (v * 10.0).round() / 10.0).collect()
 }
 
-/// The report for one Revit file's bytes, with its IFC export's if given.
-pub fn analyse_bytes(bytes: Vec<u8>, ifc_bytes: Option<&[u8]>, control: &rvt::control::WalkerControl) -> Result<Value, String> {
+/// The report for one Revit file's bytes, with its IFC export's if given, or
+/// for an IFC on its own. Without a Revit file, `recorded` is what the IFC's
+/// ports and ends-inside joins give.
+pub fn analyse_bytes(bytes: Option<Vec<u8>>, ifc_bytes: Option<&[u8]>, control: &rvt::control::WalkerControl) -> Result<Value, String> {
     let mut stage = clock_ms();
     let mut lap = || {
         let t = clock_ms();
@@ -76,22 +78,32 @@ pub fn analyse_bytes(bytes: Vec<u8>, ifc_bytes: Option<&[u8]>, control: &rvt::co
         stage = t;
         ms.round()
     };
+    if bytes.is_none() && ifc_bytes.is_none() {
+        return Err("give a Revit file, an IFC, or both".into());
+    }
+    let from_rvt = bytes.is_some();
     let mut decode = serde_json::Map::new();
-    let mut net = rvt_native::network_with_laps(bytes, control, &mut |name| {
-        decode.insert(name.into(), lap().into());
-    })
-    .map_err(|e| e.to_string())?;
+    let mut net = match bytes {
+        Some(bytes) => rvt_native::network_with_laps(bytes, control, &mut |name| {
+            decode.insert(name.into(), lap().into());
+        })
+        .map_err(|e| e.to_string())?,
+        None => Network::default(),
+    };
     let mut warnings = Vec::new();
-    let recorded = connectivity(&net);
+    let mut recorded = connectivity(&net);
     let ifc = ifc_bytes.map(|b| {
         let elements = ifc::parse(b);
         let parse_ms = lap();
         let m = ifc::merge(&mut net, &elements);
         json!({
             "parse_ms": parse_ms, "elements": m.elements, "matched": m.matched, "duct_geometry": m.geometry,
-            "added": m.added, "joined_inside": m.joined, "connectivity": connectivity(&net),
+            "added": m.added, "ports": m.ports, "joined_inside": m.joined, "connectivity": connectivity(&net),
         })
     });
+    if !from_rvt {
+        recorded = connectivity(&net);
+    }
     let takeoffs = heal::join_takeoffs(&mut net);
     let healed = connectivity(&net);
     let heal_ms = lap();
@@ -206,10 +218,11 @@ pub fn analyse_bytes(bytes: Vec<u8>, ifc_bytes: Option<&[u8]>, control: &rvt::co
     }))
 }
 
-/// JS entry point: `analyse(rvt: Uint8Array, ifc?: Uint8Array) -> string`
-/// (the JSON report). Run it in a Web Worker: a 40 MB model takes 10 to 20 s.
+/// JS entry point: `analyse(rvt?: Uint8Array, ifc?: Uint8Array) -> string`
+/// (the JSON report), at least one given. Run it in a Web Worker: a 40 MB
+/// model takes 10 to 20 s.
 #[wasm_bindgen]
-pub fn analyse(bytes: &[u8], ifc: Option<Vec<u8>>) -> Result<String, JsValue> {
-    let report = analyse_bytes(bytes.to_vec(), ifc.as_deref(), &rvt::control::WalkerControl::new()).map_err(|e| JsValue::from_str(&e))?;
+pub fn analyse(bytes: Option<Vec<u8>>, ifc: Option<Vec<u8>>) -> Result<String, JsValue> {
+    let report = analyse_bytes(bytes, ifc.as_deref(), &rvt::control::WalkerControl::new()).map_err(|e| JsValue::from_str(&e))?;
     Ok(report.to_string())
 }
