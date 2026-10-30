@@ -1,7 +1,8 @@
-//! End-reflection loss at the duct termination.
+//! End-reflection loss at the duct termination, ASHRAE's form for a duct
+//! ending flush with a wall or ceiling, as a diffuser's neck does:
 //!
 //! ```text
-//!     ERL(f) = 10 log10( 1 + (c / (pi · f · D))^1.88 )
+//!     ERL(f) = 10 log10( 1 + (0.7 c / (pi · f · D))^2 )
 //! ```
 //! Above ~500 Hz for typical duct sizes the loss approaches zero.
 
@@ -19,21 +20,19 @@ pub fn end_reflection_loss_db<const N: usize>(
     for i in 0..N_BANDS {
         let f = OCTAVE_BANDS_HZ[i];
         let denom = effective_diameter_m * (std::f64::consts::PI * f);
-        let ratio = Dual::<N>::constant(C_AIR) / denom;
-        // ratio^1.88 via exp(1.88 · ln ratio)
-        let pow = (ratio.ln() * 1.88).exp();
-        let inner = pow + 1.0;
+        let ratio = Dual::<N>::constant(0.7 * C_AIR) / denom;
+        let inner = ratio * ratio + 1.0;
         out[i] = inner.log10() * 10.0;
     }
     out
 }
 
-/// Hydraulic equivalent diameter for a rectangular termination.
+/// Diameter of the circle with a rectangular termination's area.
 pub fn effective_diameter_rectangular<const N: usize>(
     width_m: Dual<N>,
     height_m: Dual<N>,
 ) -> Dual<N> {
-    (width_m * height_m) * 4.0 / ((width_m + height_m) * 2.0)
+    (width_m * height_m * (4.0 / std::f64::consts::PI)).sqrt()
 }
 
 #[cfg(test)]
@@ -61,5 +60,16 @@ mod tests {
         let small = end_reflection_loss_db(Dual::<1>::constant(0.2));
         let large = end_reflection_loss_db(Dual::<1>::constant(0.4));
         assert!(large[0].value < small[0].value);
+    }
+
+    /// Within 1.5 dB of ASHRAE's tabulated loss for a 250 mm square duct:
+    /// 12, 8, 4, 1, 0 dB at 63 Hz to 1 kHz.
+    #[test]
+    fn matches_the_tabulated_loss() {
+        let d = effective_diameter_rectangular(Dual::<1>::constant(0.25), Dual::<1>::constant(0.25));
+        let erl = end_reflection_loss_db(d);
+        for (i, table) in [12.0, 8.0, 4.0, 1.0, 0.0].into_iter().enumerate() {
+            assert!((erl[i].value - table).abs() < 1.5, "band {i}: {} dB", erl[i].value);
+        }
     }
 }

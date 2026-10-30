@@ -11,6 +11,7 @@
 <p>Pick a Revit file, its IFC export, or both. They are read here, in this tab; nothing is uploaded.</p>
 <label>Revit <input type="file" id="rvt" accept=".rvt"></label>
 <label>IFC <input type="file" id="ifc" accept=".ifc"></label>
+<label>Unit sound power, 63 Hz–8 kHz <input id="lw" size="32" placeholder="optional: 8 values, dB re 1 pW"></label>
 <button id="go">Analyse</button>
 <p id="status"></p>
 <div id="out"></div>
@@ -21,10 +22,10 @@ const worker = new Worker('./worker.js', { type: 'module' });
 const status = document.getElementById('status');
 const out = document.getElementById('out');
 
-async function run(rvt, ifc) {
+async function run(rvt, ifc, lw) {
   const files = [rvt, ifc].filter(Boolean);
   status.textContent = `analysing ${(files.reduce((n, f) => n + f.byteLength, 0) / 1e6).toFixed(0)} MB…`;
-  worker.postMessage({ rvt, ifc }, files);
+  worker.postMessage({ rvt, ifc, lw }, files);
 }
 
 worker.onmessage = ({ data }) => {
@@ -52,7 +53,8 @@ worker.onmessage = ({ data }) => {
 };
 
 const picked = id => document.getElementById(id).files[0]?.arrayBuffer();
-document.getElementById('go').onclick = async () => run(await picked('rvt'), await picked('ifc'));
+const lw = () => document.getElementById('lw').value.trim().split(/[\s,]+/).filter(Boolean).map(Number);
+document.getElementById('go').onclick = async () => run(await picked('rvt'), await picked('ifc'), lw().length ? lw() : undefined);
 // ?model=<url>[&ifc=<url>], or ?ifc=<url> alone, loads files without the pickers (for automated runs).
 const model = params.get('model');
 const load = async url => url && (await fetch(url)).arrayBuffer();

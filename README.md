@@ -27,12 +27,14 @@ npm run dev
 - `wasm/` — the wasm-pack output (committed so Vercel can build without a
   Rust toolchain). Regenerate with `./scripts/rebuild-wasm.sh`.
 - `rust/wall-duct-core/` — pure Rust physics + forward-mode autodiff
-  (`Dual<N>`), with 25 unit tests (Python-parity numerics + finite-difference
-  gradient checks).
+  (`Dual<N>`). Its elements follow published methods (ASHRAE duct, elbow and
+  end reflection losses, Schultz's room equation, Woods' fitting regen, CIBSE
+  diffuser noise, TM 5-805-4 attenuators); `cargo run --example reference`
+  sets them beside their references.
 - `rust/wall-duct-wasm/` — `#[wasm_bindgen]` wrapper exposing a single
   `evaluate(params)` entry point returning a `DesignFacts` JSON object.
-- `duct_poc/` — the original Python / PyTorch PoC. Kept alongside because
-  the Rust tests are numerically pinned against its output.
+- `duct_poc/` — the original Python / PyTorch PoC, which the Rust core began
+  as a port of. Its physics are the older placeholders.
 - `scripts/rebuild-wasm.sh` — rebuild wasm and refresh `wasm/`.
 
 ## Deploying to Vercel

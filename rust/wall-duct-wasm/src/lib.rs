@@ -15,9 +15,10 @@ use wall_duct_core::metrics::nc;
 use wall_duct_core::metrics::octave::{N_BANDS, OCTAVE_BANDS_HZ};
 use wall_duct_core::model::{
     self, block_slot_base, BlockParams, DuctSystem, Params, MAX_BLOCK_SLOTS, N_PARAMS,
-    SLOT_LOG_RECEIVER_DISTANCE, SLOT_LOG_ROOM_VOLUME, SLOT_LOG_RT60, SLOT_LOG_VOLUME_FLOW,
+    SLOT_LOG_RECEIVER_DISTANCE, SLOT_LOG_ROOM_VOLUME, SLOT_LOG_VOLUME_FLOW,
     SLOT_SOURCE_OFFSET, SYSTEM_SLOTS,
 };
+use wall_duct_core::physics::elbow::ElbowKind;
 use wall_duct_core::physics::source::SourceType;
 
 // ---- input shape ----
@@ -28,7 +29,6 @@ pub struct InputParams {
     pub source_offset_db: f64,
     pub volume_flow_m3s: f64,
     pub room_volume_m3: f64,
-    pub rt60_s: f64,
     pub receiver_distance_m: f64,
     pub blocks: Vec<InputBlock>,
 }
@@ -75,7 +75,7 @@ impl InputBlock {
             Self::Segment { length_m, width_m, height_m, lining_m } => {
                 BlockParams::Segment { length_m, width_m, height_m, lining_m }
             }
-            Self::Bend { width_m, height_m } => BlockParams::Bend { width_m, height_m },
+            Self::Bend { width_m, height_m } => BlockParams::Bend { width_m, height_m, kind: ElbowKind::Mitred },
             Self::Attenuator {
                 length_m, width_m, height_m, free_area_ratio, splitter_m,
             } => BlockParams::Attenuator {
@@ -117,7 +117,6 @@ pub struct DesignParams {
     pub source_offset_db: f64,
     pub volume_flow_ls: f64,
     pub room_volume_m3: f64,
-    pub rt60_s: f64,
     pub receiver_distance_m: f64,
 }
 
@@ -143,7 +142,6 @@ fn is_constraint_slot(slot: usize) -> bool {
         SLOT_SOURCE_OFFSET
             | SLOT_LOG_VOLUME_FLOW
             | SLOT_LOG_ROOM_VOLUME
-            | SLOT_LOG_RT60
             | SLOT_LOG_RECEIVER_DISTANCE
     )
 }
@@ -165,10 +163,17 @@ fn describe_block(idx: usize, bp: &BlockParams, q_m3s: f64) -> BlockSummary {
                 mm(width_m), mm(height_m),
             )
         }
-        BlockParams::Bend { width_m, height_m } => {
+        BlockParams::Bend { width_m, height_m, kind } => {
             let v = q_m3s / (width_m * height_m);
             format!(
-                "Bend {}×{} mm · v ≈ {v:.1} m/s",
+                "Bend {}×{} mm, {kind:?} · v ≈ {v:.1} m/s",
+                mm(width_m), mm(height_m),
+            )
+        }
+        BlockParams::Damper { width_m, height_m, closed_deg } => {
+            let v = q_m3s / (width_m * height_m);
+            format!(
+                "Damper {}×{} mm, {closed_deg:.0}° closed · v ≈ {v:.1} m/s",
                 mm(width_m), mm(height_m),
             )
         }
@@ -191,7 +196,7 @@ fn describe_block(idx: usize, bp: &BlockParams, q_m3s: f64) -> BlockSummary {
                 mm(width_m), mm(height_m),
             )
         }
-        BlockParams::Branch { flow_ratio } => {
+        BlockParams::Branch { flow_ratio, .. } => {
             format!("Branch, {:.0}% of flow continues", flow_ratio * 100.0)
         }
     };
@@ -303,8 +308,7 @@ pub fn evaluate_params(input_source_type: String, params: Params) -> DesignFacts
     // declared slot_names range.
     let occupied_slot = |slot: usize| -> bool {
         if slot < SYSTEM_SLOTS {
-            // System slots 0..=4 live; 5..=7 reserved.
-            return slot <= SLOT_LOG_RECEIVER_DISTANCE;
+            return is_constraint_slot(slot);
         }
         let off = slot - SYSTEM_SLOTS;
         let block_idx = off / MAX_BLOCK_SLOTS;
@@ -331,7 +335,7 @@ pub fn evaluate_params(input_source_type: String, params: Params) -> DesignFacts
         .enumerate()
         .filter_map(|(i, s)| {
             // Re-derive the slot index to test constraint-ness. Ranking
-            // excludes external constraints (flow, room, rt60, distance,
+            // excludes external constraints (flow, room, distance,
             // source) — matches the Python CONSTRAINT_PARAMS filter.
             let occupied: Vec<usize> = (0..N_PARAMS).filter(|&s| occupied_slot(s)).collect();
             let slot = occupied[i];
@@ -366,7 +370,6 @@ pub fn evaluate_params(input_source_type: String, params: Params) -> DesignFacts
         source_offset_db: (params.source_offset_db * 10.0).round() / 10.0,
         volume_flow_ls: (params.volume_flow_m3s * 10000.0).round() / 10.0,
         room_volume_m3: (params.room_volume_m3 * 10.0).round() / 10.0,
-        rt60_s: (params.rt60_s * 100.0).round() / 100.0,
         receiver_distance_m: (params.receiver_distance_m * 100.0).round() / 100.0,
     };
 
@@ -398,7 +401,6 @@ pub fn evaluate(params_js: JsValue) -> Result<JsValue, JsValue> {
         source_offset_db: input.source_offset_db,
         volume_flow_m3s: input.volume_flow_m3s,
         room_volume_m3: input.room_volume_m3,
-        rt60_s: input.rt60_s,
         receiver_distance_m: input.receiver_distance_m,
         blocks: input.blocks.into_iter().map(InputBlock::into_params).collect(),
     };
@@ -416,7 +418,7 @@ mod tests {
     use super::*;
     use wall_duct_core::model::Params as CoreParams;
 
-    /// End-to-end: the demo case must rate NC=57 and hand back 8 band facts,
+    /// End-to-end: the demo case must rate NC=24 and hand back 8 band facts,
     /// some controlling bands, at least one design-lever sensitivity, and
     /// three block summaries.
     #[test]
@@ -424,14 +426,14 @@ mod tests {
         let params = CoreParams::demo();
         let out = evaluate_params("FCU (ceiling)".to_string(), params);
 
-        assert_eq!(out.nc, 57);
+        assert_eq!(out.nc, 24);
         assert_eq!(out.receiver_spl_bands.len(), 8);
         assert_eq!(out.blocks.len(), 3);
         assert_eq!(out.blocks[0].type_name, "Segment");
         assert_eq!(out.blocks[1].type_name, "Attenuator");
         assert_eq!(out.blocks[2].type_name, "Diffuser");
 
-        // Controlling bands should be non-empty at NC 57 for this noisy demo.
+        // Controlling bands should be non-empty at NC 24 for this demo.
         assert!(!out.controlling_bands.is_empty());
 
         // Top sensitivities exclude constraint params.
@@ -440,7 +442,6 @@ mod tests {
             assert!(s.param != "source_offset");
             assert!(s.param != "log_volume_flow");
             assert!(s.param != "log_room_volume");
-            assert!(s.param != "log_rt60");
             assert!(s.param != "log_receiver_distance");
         }
 

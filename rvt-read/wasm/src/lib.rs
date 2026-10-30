@@ -63,14 +63,31 @@ fn classified(net: &Network) -> Value {
     json!({ "elements": total, "by_rule": named, "for_classifier": queue })
 }
 
+/// A forward-curved fan's sound power from its flow, TM 5-805-4 (eq. 10-5,
+/// table 10-13): Kw + 10 lg(cfm) + 20 lg(in. wg) + 2 dB blade frequency
+/// increment at 500 Hz, at an assumed 250 Pa (1 in. wg) and peak efficiency.
+/// The table stops at 4 kHz; 8 kHz carries on its slope.
+fn fan_estimate(flow_m3s: f64) -> [f64; N_BANDS] {
+    const KW: [f64; N_BANDS] = [47.0, 43.0, 39.0, 36.0, 34.0, 32.0, 28.0, 24.0];
+    const BFI: [f64; N_BANDS] = [0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0];
+    let cfm = flow_m3s / 0.000_471_947;
+    std::array::from_fn(|i| KW[i] + 10.0 * cfm.log10() + BFI[i])
+}
+
 fn bands(spectrum: impl Iterator<Item = f64>) -> Vec<f64> {
     spectrum.map(|v| (v * 10.0).round() / 10.0).collect()
 }
 
 /// The report for one Revit file's bytes, with its IFC export's if given, or
 /// for an IFC on its own. Without a Revit file, `recorded` is what the IFC's
-/// ports and ends-inside joins give.
-pub fn analyse_bytes(bytes: Option<Vec<u8>>, ifc_bytes: Option<&[u8]>, control: &rvt::control::WalkerControl) -> Result<Value, String> {
+/// ports and ends-inside joins give. `source` is the unit's discharge sound
+/// power, 63 Hz to 8 kHz, where its data gives one.
+pub fn analyse_bytes(
+    bytes: Option<Vec<u8>>,
+    ifc_bytes: Option<&[u8]>,
+    source: Option<[f64; N_BANDS]>,
+    control: &rvt::control::WalkerControl,
+) -> Result<Value, String> {
     let mut stage = clock_ms();
     let mut lap = || {
         let t = clock_ms();
@@ -108,9 +125,7 @@ pub fn analyse_bytes(bytes: Option<Vec<u8>>, ifc_bytes: Option<&[u8]>, control: 
     let healed = connectivity(&net);
     let heal_ms = lap();
 
-    let cp = path::critical_path(&net);
-    let path_ms = lap();
-    let Some(cp) = cp else {
+    let Some(cp) = path::critical_path(&net) else {
         return Ok(json!({ "recorded": recorded, "ifc": ifc, "healed": healed, "classified": classified(&net), "path": null }));
     };
     let unit = &net.nodes[cp.tree.root];
@@ -124,11 +139,45 @@ pub fn analyse_bytes(bytes: Option<Vec<u8>>, ifc_bytes: Option<&[u8]>, control: 
             q_unit * 1000.0
         ));
     }
-    for &n in &cp.path {
+    // No sound data in the model; without the unit's own, an estimate from its flow.
+    let lw = source.unwrap_or_else(|| fan_estimate(q_unit));
+    let params = |mapped: &[chain::Mapped]| Params {
+        source_type: SourceType::Given(lw),
+        source_offset_db: 0.0,
+        volume_flow_m3s: q_unit,
+        room_volume_m3: 50.0,
+        receiver_distance_m: 2.0,
+        blocks: mapped.iter().map(|m| m.block).collect(),
+    };
+    // The critical terminal is the loudest, not the farthest: each division
+    // on the way out takes power off. Rate every one the unit serves.
+    let rated = |path: &[usize]| {
+        let mapped = chain::chain(&net, path, &cp.flow);
+        let sys = (mapped.len() <= MAX_BLOCKS).then(|| DuctSystem::from_params(&params(&mapped)))?;
+        let loudest = sys.receiver_spl_values().into_iter().fold(f64::MIN, f64::max);
+        Some((sys.nc(), loudest, mapped))
+    };
+    let candidates: Vec<_> = cp
+        .tree
+        .order
+        .iter()
+        .filter(|&&t| net.nodes[t].kind == NodeKind::Terminal && net.nodes[t].flow.is_some_and(|q| q > 0.0))
+        .filter_map(|&t| cp.tree.path_to(t).map(|p| (t, p)))
+        .collect();
+    let terminals_rated = candidates.len();
+    let Some((terminal, path, (_, _, mapped))) = candidates
+        .into_iter()
+        .filter_map(|(t, p)| rated(&p).map(|r| (t, p, r)))
+        .max_by(|(_, _, a), (_, _, b)| (a.0, a.1).partial_cmp(&(b.0, b.1)).unwrap())
+    else {
+        return Err(format!("every path from the unit maps to more than the engine's {MAX_BLOCKS} blocks"));
+    };
+    let path_ms = lap();
+    for &n in &path {
         let node = &net.nodes[n];
         let ty = classify_node(node);
         match ty {
-            Some(ElementType::VolumeDamper | ElementType::FireSmokeDamper | ElementType::VavTerminalUnit | ElementType::Plenum) => {
+            Some(ElementType::Plenum) => {
                 warnings.push(format!("{} {} ({}) is on the path but not modelled", ty.unwrap().label(), node.id, node.family))
             }
             None if node.kind == NodeKind::Fitting => {
@@ -137,21 +186,7 @@ pub fn analyse_bytes(bytes: Option<Vec<u8>>, ifc_bytes: Option<&[u8]>, control: 
             _ => {}
         }
     }
-    let mapped = chain::chain(&net, &cp.path, &cp.flow);
-    if mapped.len() > MAX_BLOCKS {
-        return Err(format!("critical path maps to {} blocks; the engine takes {MAX_BLOCKS}", mapped.len()));
-    }
-    let params = Params {
-        // No sound data in the model; the FCU shape stands in for the unit.
-        source_type: SourceType::FcuCeiling,
-        source_offset_db: 0.0,
-        volume_flow_m3s: q_unit,
-        room_volume_m3: 50.0,
-        rt60_s: 0.6,
-        receiver_distance_m: 2.0,
-        blocks: mapped.iter().map(|m| m.block).collect(),
-    };
-    let sys = DuctSystem::from_params(&params);
+    let sys = DuctSystem::from_params(&params(&mapped));
 
     let mut q = sys.volume_flow();
     let mut pwl = source_pwl(sys.source_type, sys.source_offset);
@@ -161,7 +196,7 @@ pub fn analyse_bytes(bytes: Option<Vec<u8>>, ifc_bytes: Option<&[u8]>, control: 
         pwl = block.forward(&pwl, q);
         let velocity = match m.block {
             BlockParams::Segment { width_m, height_m, .. }
-            | BlockParams::Bend { width_m, height_m }
+            | BlockParams::Bend { width_m, height_m, .. }
             | BlockParams::Attenuator { width_m, height_m, .. }
             | BlockParams::Diffuser { width_m, height_m } => Some(q.value / (width_m * height_m)),
             _ => None,
@@ -194,8 +229,9 @@ pub fn analyse_bytes(bytes: Option<Vec<u8>>, ifc_bytes: Option<&[u8]>, control: 
         "path": {
             "unit": { "id": unit.id, "family": unit.family, "air_flow_l_s": unit.flow.map(|q| q * 1000.0) },
             "system": cp.system,
-            "terminal": { "id": net.nodes[cp.terminal].id, "family": net.nodes[cp.terminal].family },
-            "elements": cp.path.len(),
+            "terminal": { "id": net.nodes[terminal].id, "family": net.nodes[terminal].family },
+            "terminals_rated": terminals_rated,
+            "elements": path.len(),
             "flow_l_s": q_unit * 1000.0,
             "bands_hz": OCTAVE_BANDS_HZ,
             "source_lw_db": bands(source_pwl::<1>(sys.source_type, wall_duct_core::autodiff::Dual::constant(0.0)).iter().map(|b| b.value)),
@@ -208,9 +244,11 @@ pub fn analyse_bytes(bytes: Option<Vec<u8>>, ifc_bytes: Option<&[u8]>, control: 
             },
         },
         "assumptions": [
-            "source: generic FCU spectrum, 0 dB offset (no sound data in the model)",
-            "room: 50 m3, RT60 0.6 s, receiver 2 m",
-            "ducts unlined; takeoff, tee and transition regen and loss not modelled",
+            if source.is_some() { "source: the unit's sound power as given" } else { "source: a forward-curved fan at the unit's flow and 250 Pa (no sound data given)" },
+            "room: 50 m3, receiver 2 m, Schultz's equation for a normally furnished room",
+            "ducts unlined; a tee's loss is its power division; transitions not modelled",
+            "regen of bends, tees and dampers by Woods' method; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
+            "dampers open; a VAV box is its damper, 15° closed",
             "silencers: length from the IFC, section from the duct, free area 0.5 and 100 mm splitters assumed",
             "element types from family-name rules; names they leave are listed under classified",
         ],
@@ -218,11 +256,27 @@ pub fn analyse_bytes(bytes: Option<Vec<u8>>, ifc_bytes: Option<&[u8]>, control: 
     }))
 }
 
-/// JS entry point: `analyse(rvt?: Uint8Array, ifc?: Uint8Array) -> string`
-/// (the JSON report), at least one given. Run it in a Web Worker: a 40 MB
+/// JS entry point: `analyse(rvt?: Uint8Array, ifc?: Uint8Array, lw?:
+/// Float64Array) -> string` (the JSON report), a model file at least, `lw`
+/// the unit's sound power in the 8 bands. Run it in a Web Worker: a 40 MB
 /// model takes 10 to 20 s.
 #[wasm_bindgen]
-pub fn analyse(bytes: Option<Vec<u8>>, ifc: Option<Vec<u8>>) -> Result<String, JsValue> {
-    let report = analyse_bytes(bytes, ifc.as_deref(), &rvt::control::WalkerControl::new()).map_err(|e| JsValue::from_str(&e))?;
+pub fn analyse(bytes: Option<Vec<u8>>, ifc: Option<Vec<u8>>, lw: Option<Vec<f64>>) -> Result<String, JsValue> {
+    let source = lw.map(|v| <[f64; N_BANDS]>::try_from(v).map_err(|_| JsValue::from_str("give the unit's sound power in 8 bands, 63 Hz to 8 kHz"))).transpose()?;
+    let report = analyse_bytes(bytes, ifc.as_deref(), source, &rvt::control::WalkerControl::new()).map_err(|e| JsValue::from_str(&e))?;
     Ok(report.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    /// TM 5-805-4's worked example: 20,000 cfm at 2.5 in. wg with a 6 dB
+    /// efficiency correction gives 104 100 96 95 91 89 85; at 1 in. wg and
+    /// peak efficiency that is 14 dB (20 lg 2.5 + 6) less.
+    #[test]
+    fn fan_estimate_reproduces_tm_example() {
+        let lw = super::fan_estimate(20_000.0 * 0.000_471_947);
+        for (got, tm) in lw.iter().zip([104.0, 100.0, 96.0, 95.0, 91.0, 89.0, 85.0]) {
+            assert!((got - (tm - 20.0 * 2.5f64.log10() - 6.0)).abs() < 0.05, "{got} vs {tm}");
+        }
+    }
 }

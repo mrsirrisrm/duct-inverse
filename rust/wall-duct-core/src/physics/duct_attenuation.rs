@@ -5,8 +5,9 @@
 //! - **Lined** (Reynolds-Bakke 1990):
 //!     `A/L [dB/m] = B(f) · (P/A)^0.73 · t^C(f)`
 //!   with `t` in inches (empirical basis).
-//! - **Unlined** (ASHRAE Table 8 approximation): small band-wise values,
-//!   loosely scaled by `sqrt(P/A / 10)` (reference P/A = 10 /m).
+//! - **Unlined** (ASHRAE 1991, P/A in 1/ft, dB/ft): up to 250 Hz
+//!     `17 (P/A)^-0.25 f^-0.85` for P/A > 3, else `1.64 (P/A)^0.73 f^-0.58`;
+//!   above, `0.02 (P/A)^0.8`.
 //!
 //! Sigmoid gate on thickness blends them so the unlined regime vanishes
 //! once the duct is actually lined, and vice-versa.
@@ -14,14 +15,27 @@
 
 use crate::autodiff::Dual;
 
-use crate::metrics::octave::N_BANDS;
+use crate::metrics::octave::{N_BANDS, OCTAVE_BANDS_HZ};
 
 /// Reynolds-Bakke B(f) coefficients — dB/m per (P/A)^0.73 · in^C.
 const RB_B: [f64; N_BANDS] = [0.027, 0.105, 0.503, 1.26, 1.37, 0.66, 0.35, 0.15];
 const RB_C: [f64; N_BANDS] = [0.00, 0.32, 0.72, 1.00, 0.91, 0.40, 0.10, -0.05];
 
-/// Unlined per-metre loss at each band (approximate ASHRAE Table 8 midvalues).
-const UNLINED_PER_M: [f64; N_BANDS] = [0.30, 0.30, 0.20, 0.10, 0.10, 0.10, 0.10, 0.10];
+const FT_PER_M: f64 = 3.28084;
+
+/// ASHRAE 1991 unlined rectangular duct loss, dB/m, at band centre `f`.
+fn unlined_db_per_m<const N: usize>(pa_per_m: Dual<N>, f: f64) -> Dual<N> {
+    let pa = pa_per_m / FT_PER_M;
+    let pow = |x: Dual<N>, p: f64| (x.ln() * p).exp();
+    let per_ft = if f > 250.0 {
+        pow(pa, 0.8) * 0.02
+    } else if pa.value > 3.0 {
+        pow(pa, -0.25) * (17.0 * f.powf(-0.85))
+    } else {
+        pow(pa, 0.73) * (1.64 * f.powf(-0.58))
+    };
+    per_ft * FT_PER_M
+}
 
 const IN_PER_M: f64 = 39.3701;
 
@@ -54,15 +68,12 @@ pub fn attenuation_db_per_m<const N: usize>(
     let gate = ((t_in - 0.1) * 50.0).sigmoid();
     let unlined_gate = Dual::<N>::constant(1.0) - gate;
 
-    // Unlined correction: sqrt(P/A / 10). Reference P/A is 10 /m.
-    let unlined_scale = (pa / 10.0).sqrt();
-
     let mut out = [Dual::<N>::constant(0.0); N_BANDS];
     for i in 0..N_BANDS {
         // lined contribution: B · (P/A)^0.73 · t^C
         let t_c = (t_safe.ln() * RB_C[i]).exp();
         let lined = pa073 * t_c * RB_B[i];
-        let unlined = unlined_scale * UNLINED_PER_M[i];
+        let unlined = unlined_db_per_m(pa, OCTAVE_BANDS_HZ[i]);
         out[i] = lined * gate + unlined * unlined_gate;
     }
     out
@@ -109,17 +120,20 @@ mod tests {
         }
     }
 
-    /// With zero lining, the unlined band values (scaled by sqrt(P/A/10))
-    /// should dominate.
+    /// With zero lining, ASHRAE's unlined equations should dominate. A
+    /// 24 in square duct (P/A 2 /ft) loses 1.64 · 2^0.73 · 63^-0.58 dB/ft
+    /// at 63 Hz and 0.02 · 2^0.8 above 250 Hz.
     #[test]
-    fn unlined_regime_close_to_table_values() {
-        let w = Dual::<1>::constant(0.316);
-        let h = Dual::<1>::constant(0.316); // P/A ≈ 12.66
+    fn unlined_regime_matches_ashrae() {
+        let w = Dual::<1>::constant(0.6096);
         let t = Dual::<1>::constant(0.0);
-        let per_m = attenuation_db_per_m(w, h, t);
-
-        let pa: f64 = 2.0 * (0.316 + 0.316) / (0.316 * 0.316);
-        let scale = (pa / 10.0).sqrt();
+        let per_m = attenuation_db_per_m(w, w, t);
+        let expected = |i: usize| match i {
+            0 => 1.64 * 2f64.powf(0.73) * 63f64.powf(-0.58),
+            1 => 1.64 * 2f64.powf(0.73) * 125f64.powf(-0.58),
+            2 => 1.64 * 2f64.powf(0.73) * 250f64.powf(-0.58),
+            _ => 0.02 * 2f64.powf(0.8),
+        } * FT_PER_M;
         for i in 0..N_BANDS {
             // Skip bands where RB_C < 0: t_safe^C blows up near t=0 and
             // leaks noticeably through the 0.7% gate residual. This mirrors
@@ -127,8 +141,7 @@ mod tests {
             if RB_C[i] < 0.0 {
                 continue;
             }
-            let expected = UNLINED_PER_M[i] * scale;
-            assert_relative_eq!(per_m[i].value, expected, max_relative = 5e-2);
+            assert_relative_eq!(per_m[i].value, expected(i), max_relative = 5e-2);
         }
     }
 

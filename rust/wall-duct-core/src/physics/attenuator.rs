@@ -9,9 +9,23 @@ use crate::autodiff::Dual;
 
 use crate::metrics::octave::N_BANDS;
 
-/// Nominal per-metre IL (dB/m) for a 50 %-free, 100 mm-splitter attenuator.
-/// Peaks in the 500 Hz – 2 kHz region.
-const PER_M_PEAK: [f64; N_BANDS] = [2.0, 5.0, 12.0, 22.0, 28.0, 24.0, 14.0, 6.0];
+/// TM 5-805-4 table 7-7: a 5 ft low pressure drop attenuator's IL, dB.
+const TM_LOW_DROP_5FT: [f64; N_BANDS] = [3.0, 5.0, 11.0, 23.0, 31.0, 34.0, 19.0, 13.0];
+
+/// Per-metre IL (dB/m) before the blockage factor, set so that the
+/// reference design (50 % free, 100 mm splitters) is TM's 5 ft low pressure
+/// drop unit. Its standard drop unit is ~1.5 times that, as blockage^1.5
+/// gives at ~35 % free.
+const PER_M_PEAK: [f64; N_BANDS] = {
+    let mut out = [0.0; N_BANDS];
+    let mut i = 0;
+    while i < N_BANDS {
+        // 1.524 m, and 0.5^1.5 = 0.353553...
+        out[i] = TM_LOW_DROP_5FT[i] / 1.524 / 0.353_553_390_593_273_8;
+        i += 1;
+    }
+    out
+};
 
 const REFERENCE_T_M: f64 = 0.1;
 
@@ -52,6 +66,16 @@ pub fn attenuator_il<const N: usize>(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    /// The reference design, 5 ft long, is TM's low pressure drop unit.
+    #[test]
+    fn reference_design_is_tm_low_drop_5ft() {
+        let c = Dual::<1>::constant;
+        let il = attenuator_il(c(1.524), c(0.5), c(REFERENCE_T_M));
+        for i in 0..N_BANDS {
+            assert_relative_eq!(il[i].value, TM_LOW_DROP_5FT[i], max_relative = 1e-9);
+        }
+    }
 
     /// Length of 0 makes every band's IL exactly 0.
     #[test]

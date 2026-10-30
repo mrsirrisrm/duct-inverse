@@ -11,9 +11,9 @@
 //!   [0]  source_offset
 //!   [1]  log_volume_flow
 //!   [2]  log_room_volume
-//!   [3]  log_rt60
+//!   [3]  reserved
 //!   [4]  log_receiver_distance
-//!   [5..8]   reserved for future system params
+//!   [5..8]   reserved
 //!   [8..13]   block 0 (up to 5 params)
 //!   [13..18]  block 1
 //!   ...
@@ -30,9 +30,10 @@ use crate::metrics::octave::N_BANDS;
 use crate::physics::{
     attenuator::attenuator_il,
     db_add,
+    elbow::{elbow_loss_db, ElbowKind},
     duct_attenuation::segment_attenuation_db,
     end_reflection::{effective_diameter_rectangular, end_reflection_loss_db},
-    regenerative::regenerative_pwl_db,
+    regenerative::{fitting_pwl_db, terminal_pwl_db},
     room::receiver_spl,
     source::{source_pwl, SourceType},
     sub_bands,
@@ -47,7 +48,7 @@ pub const MAX_BLOCKS: usize = 64;
 /// Slots reserved per block (largest variant is Attenuator with 5 params).
 pub const MAX_BLOCK_SLOTS: usize = 5;
 
-/// System-level parameter count (source_offset + 4 log-space vars + 3 reserved).
+/// System-level parameter count (source_offset + 3 log-space vars + 4 reserved).
 pub const SYSTEM_SLOTS: usize = 8;
 
 /// Total dual width.
@@ -57,7 +58,6 @@ pub const N_PARAMS: usize = SYSTEM_SLOTS + MAX_BLOCKS * MAX_BLOCK_SLOTS;
 pub const SLOT_SOURCE_OFFSET: usize = 0;
 pub const SLOT_LOG_VOLUME_FLOW: usize = 1;
 pub const SLOT_LOG_ROOM_VOLUME: usize = 2;
-pub const SLOT_LOG_RT60: usize = 3;
 pub const SLOT_LOG_RECEIVER_DISTANCE: usize = 4;
 
 /// Slot index for the first parameter of block `k`.
@@ -67,6 +67,18 @@ pub const fn block_slot_base(k: usize) -> usize {
 
 type DualN = Dual<N_PARAMS>;
 type Band = [DualN; N_BANDS];
+
+/// A 90° tee's regen datum level, Woods' table 5.2.
+const TEE_K_DB: f64 = 55.0;
+
+/// A damper's regen datum level, Woods' table 5.2: 44 dB open, 53 at 15°
+/// closed, 65 at 45°; linear between.
+fn damper_k_db(closed_deg: f64) -> f64 {
+    match closed_deg.clamp(0.0, 45.0) {
+        a if a <= 15.0 => 44.0 + a * (9.0 / 15.0),
+        a => 53.0 + (a - 15.0) * (12.0 / 30.0),
+    }
+}
 
 /// Linear-space parameters for a single block. Only fields relevant to the
 /// variant are read; the others are ignored.
@@ -81,6 +93,13 @@ pub enum BlockParams {
     Bend {
         width_m: f64,
         height_m: f64,
+        kind: ElbowKind,
+    },
+    /// A damper, `closed_deg` from fully open; a VAV box's is one.
+    Damper {
+        width_m: f64,
+        height_m: f64,
+        closed_deg: f64,
     },
     Attenuator {
         length_m: f64,
@@ -94,9 +113,12 @@ pub enum BlockParams {
         height_m: f64,
     },
     /// Branch division: the path continues with `flow_ratio` of the flow
-    /// arriving, and carries that share of the sound power.
+    /// arriving, and carries that share of the sound power, plus the tee's
+    /// own noise at the speed in the main it leaves (`width_m` × `height_m`).
     Branch {
         flow_ratio: f64,
+        width_m: f64,
+        height_m: f64,
     },
 }
 
@@ -105,6 +127,7 @@ impl BlockParams {
         match self {
             Self::Segment { .. } => "Segment",
             Self::Bend { .. } => "Bend",
+            Self::Damper { .. } => "Damper",
             Self::Attenuator { .. } => "Attenuator",
             Self::Diffuser { .. } => "Diffuser",
             Self::Branch { .. } => "Branch",
@@ -117,14 +140,8 @@ impl BlockParams {
     pub fn slot_names(&self) -> &'static [&'static str] {
         match self {
             Self::Segment { .. } => &["log_length", "log_width", "log_height", "lining_raw"],
-            Self::Bend { .. } => &["log_width", "log_height"],
-            Self::Attenuator { .. } => &[
-                "length_raw",
-                "log_width",
-                "log_height",
-                "free_area_raw",
-                "splitter_raw",
-            ],
+            Self::Bend { .. } | Self::Damper { .. } => &["log_width", "log_height"],
+            Self::Attenuator { .. } => &["length_raw", "free_area_raw", "splitter_raw"],
             Self::Diffuser { .. } => &["log_width", "log_height"],
             Self::Branch { .. } => &["log_flow_ratio"],
         }
@@ -144,11 +161,15 @@ pub enum Block {
     Bend {
         log_width: DualN,
         log_height: DualN,
+        kind: ElbowKind,
+    },
+    Damper {
+        log_width: DualN,
+        log_height: DualN,
+        closed_deg: f64,
     },
     Attenuator {
         length_raw: DualN,
-        log_width: DualN,
-        log_height: DualN,
         free_area_raw: DualN,
         splitter_raw: DualN,
     },
@@ -158,6 +179,7 @@ pub enum Block {
     },
     Branch {
         log_flow_ratio: DualN,
+        main_area_m2: f64,
     },
 }
 
@@ -180,29 +202,33 @@ impl Block {
                 log_height: v(height_m.ln(), 2),
                 lining_raw: v(lining_m, 3),
             },
-            BlockParams::Bend { width_m, height_m } => Self::Bend {
+            BlockParams::Bend { width_m, height_m, kind } => Self::Bend {
                 log_width: v(width_m.ln(), 0),
                 log_height: v(height_m.ln(), 1),
+                kind,
+            },
+            BlockParams::Damper { width_m, height_m, closed_deg } => Self::Damper {
+                log_width: v(width_m.ln(), 0),
+                log_height: v(height_m.ln(), 1),
+                closed_deg,
             },
             BlockParams::Attenuator {
                 length_m,
-                width_m,
-                height_m,
                 free_area_ratio,
                 splitter_m,
+                ..
             } => Self::Attenuator {
                 length_raw: v(length_m, 0),
-                log_width: v(width_m.ln(), 1),
-                log_height: v(height_m.ln(), 2),
-                free_area_raw: v(free_area_ratio, 3),
-                splitter_raw: v(splitter_m, 4),
+                free_area_raw: v(free_area_ratio, 1),
+                splitter_raw: v(splitter_m, 2),
             },
             BlockParams::Diffuser { width_m, height_m } => Self::Diffuser {
                 log_width: v(width_m.ln(), 0),
                 log_height: v(height_m.ln(), 1),
             },
-            BlockParams::Branch { flow_ratio } => Self::Branch {
+            BlockParams::Branch { flow_ratio, width_m, height_m } => Self::Branch {
                 log_flow_ratio: v(flow_ratio.ln(), 0),
+                main_area_m2: width_m * height_m,
             },
         }
     }
@@ -211,7 +237,7 @@ impl Block {
     /// branch.
     pub fn flow_out(&self, q: DualN) -> DualN {
         match self {
-            Self::Branch { log_flow_ratio } => q * log_flow_ratio.exp(),
+            Self::Branch { log_flow_ratio, .. } => q * log_flow_ratio.exp(),
             _ => q,
         }
     }
@@ -236,40 +262,34 @@ impl Block {
             Self::Bend {
                 log_width,
                 log_height,
+                kind,
             } => {
                 let width = log_width.exp();
                 let height = log_height.exp();
-                // Python `Bend.forward`: 1 m of unlined loss + regen at gross area.
-                let natural = segment_attenuation_db(
-                    DualN::constant(1.0),
-                    width,
-                    height,
-                    DualN::constant(0.0),
-                );
-                let after_loss = sub_bands(pwl_in, &natural);
+                let after_loss = sub_bands(pwl_in, &elbow_loss_db(width, *kind));
                 let area = width * height;
-                let regen = regenerative_pwl_db(q / area, area);
+                let regen = fitting_pwl_db(DualN::constant(kind.regen_k_db()), q / area, area);
                 db_add(&after_loss, &regen)
+            }
+            Self::Damper {
+                log_width,
+                log_height,
+                closed_deg,
+            } => {
+                let area = log_width.exp() * log_height.exp();
+                let regen = fitting_pwl_db(DualN::constant(damper_k_db(*closed_deg)), q / area, area);
+                db_add(pwl_in, &regen)
             }
             Self::Attenuator {
                 length_raw,
-                log_width,
-                log_height,
                 free_area_raw,
                 splitter_raw,
             } => {
                 let length = length_raw.max_f(0.0);
-                let width = log_width.exp();
-                let height = log_height.exp();
                 let free_ratio = free_area_raw.clamp_f(0.1, 0.9);
                 let splitter = splitter_raw.max_f(0.0);
-                let il = attenuator_il(length, free_ratio, splitter);
-                let after_il = sub_bands(pwl_in, &il);
-                // Self-noise uses free-area velocity / free-area cross-section.
-                let gross = width * height;
-                let free = gross * free_ratio;
-                let regen = regenerative_pwl_db(q / free, free);
-                db_add(&after_il, &regen)
+                // Insertion loss only: its self-noise is negligible below ~15 m/s.
+                sub_bands(pwl_in, &attenuator_il(length, free_ratio, splitter))
             }
             Self::Diffuser {
                 log_width,
@@ -280,11 +300,11 @@ impl Block {
                 let d_eff = effective_diameter_rectangular(width, height);
                 let erl = end_reflection_loss_db(d_eff);
                 let area = width * height;
-                let regen = regenerative_pwl_db(q / area, area);
+                let regen = terminal_pwl_db(q / area, area);
                 let after_erl = sub_bands(pwl_in, &erl);
                 db_add(&after_erl, &regen)
             }
-            Self::Branch { log_flow_ratio } => {
+            Self::Branch { log_flow_ratio, main_area_m2 } => {
                 // Power divides in proportion to flow: 10 log10(ratio), as
                 // 10 / ln 10 · ln(ratio). Band-independent.
                 let division = *log_flow_ratio * (10.0 / std::f64::consts::LN_10);
@@ -292,7 +312,10 @@ impl Block {
                 for band in &mut out {
                     *band = *band + division;
                 }
-                out
+                // `q` is the flow leaving; the main carried q / ratio.
+                let area = DualN::constant(*main_area_m2);
+                let main_speed = q / log_flow_ratio.exp() / area;
+                db_add(&out, &fitting_pwl_db(DualN::constant(TEE_K_DB), main_speed, area))
             }
         }
     }
@@ -306,22 +329,18 @@ pub struct Params {
     pub source_offset_db: f64,
     pub volume_flow_m3s: f64,
     pub room_volume_m3: f64,
-    pub rt60_s: f64,
     pub receiver_distance_m: f64,
     pub blocks: Vec<BlockParams>,
 }
 
 impl Params {
-    /// Canonical 3-block demo (segment → attenuator → diffuser), matching
-    /// the first-slice test case so the dynamic path can be checked against
-    /// the same Python reference numbers.
+    /// Canonical 3-block demo (segment → attenuator → diffuser).
     pub fn demo() -> Self {
         Self {
             source_type: SourceType::FcuCeiling,
             source_offset_db: 0.0,
             volume_flow_m3s: 0.25,
             room_volume_m3: 50.0,
-            rt60_s: 0.6,
             receiver_distance_m: 2.0,
             blocks: vec![
                 BlockParams::Segment {
@@ -353,7 +372,6 @@ pub struct DuctSystem {
     pub source_offset: DualN,
     pub log_volume_flow: DualN,
     pub log_room_volume: DualN,
-    pub log_rt60: DualN,
     pub log_receiver_distance: DualN,
     pub blocks: Vec<Block>,
     /// Retained copy of the linear-space params so slot→name lookups can
@@ -381,7 +399,6 @@ impl DuctSystem {
             source_offset: v(p.source_offset_db, SLOT_SOURCE_OFFSET),
             log_volume_flow: v(p.volume_flow_m3s.ln(), SLOT_LOG_VOLUME_FLOW),
             log_room_volume: v(p.room_volume_m3.ln(), SLOT_LOG_ROOM_VOLUME),
-            log_rt60: v(p.rt60_s.ln(), SLOT_LOG_RT60),
             log_receiver_distance: v(p.receiver_distance_m.ln(), SLOT_LOG_RECEIVER_DISTANCE),
             blocks,
             block_params: p.blocks.clone(),
@@ -390,7 +407,6 @@ impl DuctSystem {
 
     pub fn volume_flow(&self) -> DualN { self.log_volume_flow.exp() }
     pub fn room_volume(&self) -> DualN { self.log_room_volume.exp() }
-    pub fn rt60(&self) -> DualN { self.log_rt60.exp() }
     pub fn receiver_distance(&self) -> DualN { self.log_receiver_distance.exp() }
 
     /// `volume_flow` is the flow leaving the source; each block sees the flow
@@ -409,9 +425,7 @@ impl DuctSystem {
         receiver_spl(
             &self.diffuser_pwl(),
             self.room_volume(),
-            self.rt60(),
             self.receiver_distance(),
-            2.0,
         )
     }
 
@@ -435,7 +449,6 @@ impl DuctSystem {
             SLOT_SOURCE_OFFSET => "source_offset".into(),
             SLOT_LOG_VOLUME_FLOW => "log_volume_flow".into(),
             SLOT_LOG_ROOM_VOLUME => "log_room_volume".into(),
-            SLOT_LOG_RT60 => "log_rt60".into(),
             SLOT_LOG_RECEIVER_DISTANCE => "log_receiver_distance".into(),
             _ if slot < SYSTEM_SLOTS => format!("system_reserved_{slot}"),
             _ => {
@@ -459,27 +472,27 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
-    /// Dynamic-chain parity against the Python PoC for the same 3-block
-    /// demo case used in the first slice. Receiver SPL per band must match
-    /// within 1e-6, and NC must come out as 57.
+    /// The demo case's receiver SPL, pinned. The elements follow ASHRAE's
+    /// published methods (see `examples/reference.rs`), which the Python PoC
+    /// did not, so this no longer matches it.
     #[test]
-    fn matches_python_reference_demo_case() {
+    fn demo_case_is_unchanged() {
         let sys = DuctSystem::from_params(&Params::demo());
         let spl = sys.receiver_spl_values();
         let expected: [f64; N_BANDS] = [
-            47.88240297989915,
-            53.658029197414464,
-            60.61023266584057,
-            59.88291069919241,
-            56.87429424812974,
-            52.20217853004527,
-            46.41449652581577,
-            40.9136770112554,
+            44.096531638082034,
+            43.139043703016526,
+            32.31057615552124,
+            21.087519954001806,
+            15.05759263116579,
+            10.056977307606012,
+            16.71481110344483,
+            17.977697506862796,
         ];
         for i in 0..N_BANDS {
             assert_relative_eq!(spl[i], expected[i], max_relative = 1e-6);
         }
-        assert_eq!(sys.nc(), 57);
+        assert_eq!(sys.nc(), 24);
     }
 
     /// Sanity: every *occupied* slot (system slots + the slots actually
@@ -489,8 +502,8 @@ mod tests {
     fn occupied_slots_contribute_gradient() {
         let sys = DuctSystem::from_params(&Params::demo());
         let spl = sys.receiver_spl();
-        // System slots 0..=4 are all live; 5..=7 are reserved.
-        for slot in 0..=4 {
+        // System slots 0..=4 but 3 are live; 3 and 5..=7 are reserved.
+        for slot in [0, 1, 2, 4] {
             let any = (0..N_BANDS).any(|b| spl[b].grad[slot].abs() > 1e-12);
             assert!(any, "system slot {slot} has no gradient");
         }
@@ -515,7 +528,6 @@ mod tests {
             source_offset_db: 0.0,
             volume_flow_m3s: 0.3,
             room_volume_m3: 40.0,
-            rt60_s: 0.5,
             receiver_distance_m: 2.5,
             blocks: vec![
                 BlockParams::Segment {
@@ -527,6 +539,7 @@ mod tests {
                 BlockParams::Bend {
                     width_m: 0.35,
                     height_m: 0.25,
+                    kind: ElbowKind::Mitred,
                 },
                 BlockParams::Attenuator {
                     length_m: 1.0,
@@ -553,8 +566,8 @@ mod tests {
 
     /// A branch passing half the flow lowers every band by 10 log10 2 at the
     /// diffuser, less the change in diffuser regen from the halved velocity.
-    /// With the diffuser's regen made negligible (a huge face, ~55 dB below
-    /// the fan), the drop is 3.01 dB and the flow-ratio gradient 10 / ln 10,
+    /// With the diffuser's and the tee's regen made negligible (a huge face
+    /// and main, ~55 dB below the fan), the drop is 3.01 dB and the flow-ratio gradient 10 / ln 10,
     /// to within what that regen still contributes.
     #[test]
     fn branch_divides_power_by_flow_ratio() {
@@ -563,18 +576,23 @@ mod tests {
             source_offset_db: 0.0,
             volume_flow_m3s: 0.2,
             room_volume_m3: 50.0,
-            rt60_s: 0.6,
             receiver_distance_m: 2.0,
             blocks,
         };
         let diffuser = BlockParams::Diffuser { width_m: 20.0, height_m: 20.0 };
         let whole = DuctSystem::from_params(&chain(vec![diffuser])).diffuser_pwl();
-        let half = DuctSystem::from_params(&chain(vec![BlockParams::Branch { flow_ratio: 0.5 }, diffuser]))
+        let half = DuctSystem::from_params(&chain(vec![BlockParams::Branch { flow_ratio: 0.5, width_m: 20.0, height_m: 20.0 }, diffuser]))
             .diffuser_pwl();
         for i in 0..N_BANDS {
             assert_relative_eq!(whole[i].value - half[i].value, 10.0 * 2.0f64.log10(), max_relative = 1e-4);
             assert_relative_eq!(half[i].grad[block_slot_base(0)], 10.0 / std::f64::consts::LN_10, max_relative = 1e-4);
         }
+    }
+
+    /// Woods' damper levels at his three positions, and between.
+    #[test]
+    fn damper_datum_levels() {
+        assert_eq!([0.0, 15.0, 45.0, 30.0, 90.0].map(damper_k_db), [44.0, 53.0, 65.0, 59.0, 65.0]);
     }
 
     /// Slot labels resolve to readable strings.
@@ -584,9 +602,9 @@ mod tests {
         assert_eq!(sys.slot_label(SLOT_SOURCE_OFFSET), "source_offset");
         // Block 0 is a Segment — slot 8 is its log_length.
         assert_eq!(sys.slot_label(block_slot_base(0)), "block0.log_length");
-        // Block 1 is an Attenuator — slot +3 is free_area_raw.
+        // Block 1 is an Attenuator — slot +1 is free_area_raw.
         assert_eq!(
-            sys.slot_label(block_slot_base(1) + 3),
+            sys.slot_label(block_slot_base(1) + 1),
             "block1.free_area_raw"
         );
     }

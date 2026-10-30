@@ -1,17 +1,20 @@
 //! Source PWL spectra — fan / FCU / VAV box.
 //!
-//! Canonical shapes by source type, offset in dB by a user-controllable
-//! overall level. The shape stays fixed; the offset is the design lever.
+//! Canonical shapes by source type, or the unit's own from its data, offset
+//! in dB by a user-controllable overall level. The shape stays fixed; the
+//! offset is the design lever.
 
 use crate::autodiff::Dual;
 
 use crate::metrics::octave::N_BANDS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SourceType {
     FcuCeiling,
     VavBox,
     AxialFan,
+    /// A unit's discharge sound power, 63 Hz to 8 kHz, from its data.
+    Given([f64; N_BANDS]),
 }
 
 impl SourceType {
@@ -21,6 +24,7 @@ impl SourceType {
             Self::FcuCeiling => [62.0, 60.0, 58.0, 56.0, 54.0, 51.0, 48.0, 42.0],
             Self::VavBox => [70.0, 67.0, 63.0, 60.0, 57.0, 54.0, 50.0, 44.0],
             Self::AxialFan => [82.0, 80.0, 76.0, 72.0, 68.0, 64.0, 58.0, 50.0],
+            Self::Given(lw) => lw,
         }
     }
 }

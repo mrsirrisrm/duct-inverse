@@ -33,6 +33,8 @@ dist/
 *.rft
 *.ifc
 *.ifczip
+# Local sample models, their reports and third-party reference documents.
+samples/
 
 # Editor and tool scratch
 .playwright-mcp/

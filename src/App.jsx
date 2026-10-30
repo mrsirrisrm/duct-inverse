@@ -11,7 +11,6 @@ const defaultSystem = {
   source_offset_db: 0.0,
   volume_flow_m3s: 0.25,
   room_volume_m3: 50.0,
-  rt60_s: 0.6,
   receiver_distance_m: 2.0,
   blocks: [
     { kind: "segment", length_m: 3.0, width_m: 0.4, height_m: 0.3, lining_m: 0.025 },
@@ -43,7 +42,6 @@ const PARAM_LABELS = {
   source_offset: "source level offset",
   log_volume_flow: "volume flow rate",
   log_room_volume: "room volume",
-  log_rt60: "room RT60",
   log_receiver_distance: "receiver distance",
   log_length: "length",
   length_raw: "length",
@@ -351,9 +349,6 @@ export default function App() {
           <Slider label="Volume" value={() => S().room_volume_m3} set={setS("room_volume_m3")}
             min="10" max="500" step="5"
             format={(v) => v.toFixed(0)} unit="m³" />
-          <Slider label="RT60" value={() => S().rt60_s} set={setS("rt60_s")}
-            min="0.2" max="2.0" step="0.05"
-            format={(v) => v.toFixed(2)} unit="s" />
           <Slider label="Receiver distance" value={() => S().receiver_distance_m} set={setS("receiver_distance_m")}
             min="0.5" max="10" step="0.25"
             format={(v) => v.toFixed(2)} unit="m" />
@@ -393,7 +388,6 @@ export default function App() {
                       : `+${f().nc - ncTarget()}`}
                     tone={f().nc <= ncTarget() ? "nc-good" : "nc-bad"} />
                   <Metric label="Volume flow" value={`${f().design_params.volume_flow_ls.toFixed(0)} L/s`} />
-                  <Metric label="RT60" value={`${f().design_params.rt60_s.toFixed(2)} s`} />
                 </div>
 
                 <div class="card">

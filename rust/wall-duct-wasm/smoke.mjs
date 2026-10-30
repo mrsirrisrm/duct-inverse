@@ -1,6 +1,6 @@
 // Node smoke test: evaluate the demo case through the compiled WASM and
-// assert NC=57 with the expected SPL per band. Kept as a .mjs file so
-// Node picks up ES-module conventions for the generated wrapper.
+// assert NC=24. Kept as a .mjs file so Node picks up ES-module conventions
+// for the generated wrapper.
 import { evaluate, version } from "./pkg-node/wall_duct_wasm.js";
 
 const demo = {
@@ -8,7 +8,6 @@ const demo = {
   source_offset_db: 0.0,
   volume_flow_m3s: 0.25,
   room_volume_m3: 50.0,
-  rt60_s: 0.6,
   receiver_distance_m: 2.0,
   blocks: [
     { kind: "segment", length_m: 3.0, width_m: 0.4, height_m: 0.3, lining_m: 0.025 },
@@ -32,8 +31,8 @@ for (const b of out.blocks) {
   console.log(`  [${b.index}] ${b.type_name}: ${b.label}`);
 }
 
-if (out.nc !== 57) {
-  console.error(`FAIL: expected NC=57, got ${out.nc}`);
+if (out.nc !== 24) {
+  console.error(`FAIL: expected NC=24, got ${out.nc}`);
   process.exit(1);
 }
 console.log("OK");
