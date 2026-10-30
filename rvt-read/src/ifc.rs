@@ -53,9 +53,10 @@ pub struct IfcElement {
     pub name: String,
     pub description: String,
     pub shape: Option<Shape>,
-    /// System names from the "System Name" property.
+    /// System names from the "System Name" property and system groups.
     pub systems: Vec<String>,
-    /// Design airflow, m^3/s, from a "Flow" or "Air Flow" property.
+    /// Design airflow, m^3/s, from a "Flow" or "Air Flow" property, else the
+    /// largest typed flow.
     pub flow: Option<f64>,
     /// Elements (indices into `parse`'s result) a port of this one connects to.
     pub joined: Vec<usize>,
@@ -287,6 +288,8 @@ struct File<'a> {
     entities: HashMap<u64, (&'a str, &'a str)>,
     /// Metres per file length unit.
     scale: f64,
+    /// m^3/s per file flow unit.
+    flow_scale: f64,
 }
 
 /// Points and extrusions of an element's body, in its placement's frame.
@@ -319,9 +322,49 @@ impl<'a> File<'a> {
             let Ok(id) = id.trim().parse() else { continue };
             entities.insert(id, (class.trim(), args.trim_end().strip_suffix(')').unwrap_or(args)));
         }
-        let mut file = File { entities, scale: 1.0 };
+        let mut file = File { entities, scale: 1.0, flow_scale: 1.0 };
         file.scale = file.length_unit();
+        file.flow_scale = file.project_unit("VOLUMETRICFLOWRATEUNIT").and_then(|u| file.unit_factor(u)).unwrap_or(1.0);
         file
+    }
+
+    fn project_unit(&self, kind: &str) -> Option<u64> {
+        let (_, assignment) = self.of_class("IFCUNITASSIGNMENT").next()?;
+        assignment.first()?.list().iter().filter_map(Arg::id).find(|&u| {
+            self.get(u).is_some_and(|(_, a)| a.iter().any(|x| matches!(x, Arg::Enum(k) if *k == kind)))
+        })
+    }
+
+    /// SI base units per one of the unit `id`: prefixed SI, derived and
+    /// conversion-based units (L/s, m^3/h, ft^3/min).
+    fn unit_factor(&self, id: u64) -> Option<f64> {
+        let (class, a) = self.get(id)?;
+        match class {
+            "IFCSIUNIT" => {
+                let prefix = match a.get(2) {
+                    Some(Arg::Enum("KILO")) => 1e3,
+                    Some(Arg::Enum("DECI")) => 1e-1,
+                    Some(Arg::Enum("CENTI")) => 1e-2,
+                    Some(Arg::Enum("MILLI")) => 1e-3,
+                    _ => 1.0,
+                };
+                let power = match a.get(1) {
+                    Some(Arg::Enum("VOLUMEUNIT")) => 3,
+                    Some(Arg::Enum("AREAUNIT")) => 2,
+                    _ => 1,
+                };
+                Some(f64::powi(prefix, power))
+            }
+            "IFCDERIVEDUNIT" => a.first()?.list().iter().try_fold(1.0, |k, e| {
+                let (_, e) = self.get(e.id()?)?;
+                Some(k * self.unit_factor(e.first()?.id()?)?.powf(e.get(1)?.num()?))
+            }),
+            "IFCCONVERSIONBASEDUNIT" => {
+                let (_, m) = self.get(a.get(3)?.id()?)?;
+                Some(m.first()?.num()? * self.unit_factor(m.get(1)?.id()?)?)
+            }
+            _ => None,
+        }
     }
 
     fn get(&self, id: u64) -> Option<(&'a str, Vec<Arg<'a>>)> {
@@ -507,15 +550,17 @@ impl<'a> File<'a> {
 
     /// A single-value property the network uses, onto `e`. Revit writes its
     /// parameters as bare reals in its internal units, so an IFCREAL flow is
-    /// ft^3/s; a typed flow is SI.
-    fn property(&self, id: u64, e: &mut IfcElement) {
-        let Some(("IFCPROPERTYSINGLEVALUE", raw)) = self.entities.get(&id).copied() else { return };
+    /// ft^3/s; a typed flow is in the project's flow unit. Returns any other
+    /// typed flow, m^3/s: other tools name theirs in the model's language.
+    fn property(&self, id: u64, e: &mut IfcElement) -> Option<f64> {
+        let Some(("IFCPROPERTYSINGLEVALUE", raw)) = self.entities.get(&id).copied() else { return None };
         let a = Args::parse(raw);
+        let typed = raw.contains("IFCVOLUMETRICFLOWRATEMEASURE(");
         let flow = |v: f64| {
             if raw.contains("IFCREAL(") {
                 Some(v * CFS)
-            } else if raw.contains("IFCVOLUMETRICFLOWRATEMEASURE(") {
-                Some(v)
+            } else if typed {
+                Some(v * self.flow_scale)
             } else {
                 None
             }
@@ -526,8 +571,10 @@ impl<'a> File<'a> {
             }
             (Some(Arg::Str("Flow")), Some(Arg::Num(v))) => e.flow = flow(*v).or(e.flow),
             (Some(Arg::Str("Air Flow")), Some(Arg::Num(v))) if e.flow.is_none() => e.flow = flow(*v),
+            (_, Some(Arg::Num(v))) if typed => return flow(*v),
             _ => {}
         }
+        None
     }
 }
 
@@ -605,11 +652,33 @@ pub fn parse(bytes: &[u8]) -> Vec<IfcElement> {
         });
     }
 
+    let mut other_flow = HashMap::<usize, f64>::new();
     for (_, a) in file.of_class("IFCRELDEFINESBYPROPERTIES") {
         let Some((_, set)) = a.get(5).and_then(Arg::id).and_then(|s| file.get(s)) else { continue };
         for &k in a.get(4).map(Arg::list).unwrap_or(&[]).iter().filter_map(|o| index.get(&o.id()?)) {
             for p in set.get(4).map(Arg::list).unwrap_or(&[]).iter().filter_map(Arg::id) {
-                file.property(p, &mut out[k]);
+                if let Some(q) = file.property(p, &mut out[k]) {
+                    let most = other_flow.entry(k).or_default();
+                    *most = most.max(q);
+                }
+            }
+        }
+    }
+    // Without a named flow, the largest typed one: a terminal's design flow
+    // beside its measured or minimum ones.
+    for (k, q) in other_flow {
+        if out[k].flow.is_none() && q > 0.0 {
+            out[k].flow = Some(q);
+        }
+    }
+    // Membership of a system group, IFC's own record of what a "System Name" says.
+    for (_, a) in file.of_class("IFCRELASSIGNSTOGROUP") {
+        let Some(("IFCSYSTEM" | "IFCDISTRIBUTIONSYSTEM", g)) = a.get(6).and_then(Arg::id).and_then(|g| file.get(g)) else { continue };
+        let Some(Arg::Str(name)) = g.get(2) else { continue };
+        let name = text(name);
+        for &k in a.get(4).map(Arg::list).unwrap_or(&[]).iter().filter_map(|o| index.get(&o.id()?)) {
+            if !out[k].systems.contains(&name) {
+                out[k].systems.push(name.clone());
             }
         }
     }
@@ -812,5 +881,25 @@ mod tests {
         let t = &net.nodes[net.find(8).unwrap()];
         assert_eq!((t.kind.clone(), t.family.as_str(), t.type_name.as_str()), (NodeKind::Terminal, "M_Supply Diffuser", "600 x 600"));
         assert_eq!(net.neighbours()[net.find(7).unwrap()], [net.find(8).unwrap()]);
+    }
+
+    /// MagiCAD's export: flows in L/s, named in the model's language, and a
+    /// system group in place of a "System Name".
+    const MAGICAD: &str = "ISO-10303-21;\nDATA;\n\
+        #1=IFCUNITASSIGNMENT((#2,#4));\n#2=IFCSIUNIT(*,.VOLUMEUNIT.,.DECI.,.CUBIC_METRE.);\n\
+        #3=IFCSIUNIT(*,.TIMEUNIT.,$,.SECOND.);\n#4=IFCDERIVEDUNIT((#5,#6),.VOLUMETRICFLOWRATEUNIT.,$);\n\
+        #5=IFCDERIVEDUNITELEMENT(#2,1);\n#6=IFCDERIVEDUNITELEMENT(#3,-1);\n\
+        #7=IFCAIRTERMINAL('a',$,'CLIK-125',$,$,$,$,'8',$);\n\
+        #8=IFCPROPERTYSINGLEVALUE('Virtaama',$,IFCVOLUMETRICFLOWRATEMEASURE(15.0000),$);\n\
+        #9=IFCPROPERTYSINGLEVALUE('Virtaama, todellinen',$,IFCVOLUMETRICFLOWRATEMEASURE(0.0000),$);\n\
+        #10=IFCPROPERTYSET('b',$,'FI_Tekninen',$,(#9,#8));\n#11=IFCRELDEFINESBYPROPERTIES('c',$,$,$,(#7),#10);\n\
+        #12=IFCDISTRIBUTIONSYSTEM('d',$,'Tuloilma (T1)','T1',$,$,.NOTDEFINED.);\n\
+        #13=IFCRELASSIGNSTOGROUP('e',$,$,$,(#7),$,#12);\nENDSEC;";
+
+    #[test]
+    fn typed_flow_in_the_project_unit_and_system_groups() {
+        let terminal = &parse(MAGICAD.as_bytes())[0];
+        assert_eq!(terminal.systems, ["Tuloilma (T1)"]);
+        assert!((terminal.flow.unwrap() - 0.015).abs() < 1e-12);
     }
 }

@@ -26,7 +26,7 @@ pub struct TakeoffReport {
 /// Join each takeoff to the main duct it sits on.
 ///
 /// Revit records only a takeoff's branch connector; the tap onto the main is
-/// implicit. The main is the duct whose centreline the branch duct's axis runs
+/// implicit. A takeoff with more than one join already has its main. The main is the duct whose centreline the branch duct's axis runs
 /// into, square to it, near the takeoff. Where several qualify (stacked or
 /// parallel mains), one sharing a system name wins, then the nearest.
 pub fn join_takeoffs(net: &mut Network) -> TakeoffReport {
@@ -39,6 +39,10 @@ pub fn join_takeoffs(net: &mut Network) -> TakeoffReport {
             continue;
         }
         report.takeoffs += 1;
+        // Joined both ways already, as an IFC's ports join it.
+        if adj[t].len() > 1 {
+            continue;
+        }
         let (Some(at), Some(branch)) = (
             node.location,
             adj[t].iter().find_map(|&b| match net.nodes[b].kind {
@@ -171,6 +175,14 @@ mod tests {
         assert_eq!(report, TakeoffReport { takeoffs: 1, joined: 1, ambiguous: 0, unmatched: vec![] });
         let e = net.edges.last().unwrap();
         assert_eq!((e.a, e.b), (takeoff, main));
+    }
+
+    #[test]
+    fn takeoff_already_joined_to_a_main_is_left() {
+        let (mut net, takeoff, _) = tee();
+        net.connect(takeoff, 1, EdgeSource::Recorded);
+        let report = join_takeoffs(&mut net);
+        assert_eq!(report, TakeoffReport { takeoffs: 1, joined: 0, ambiguous: 0, unmatched: vec![] });
     }
 
     #[test]
