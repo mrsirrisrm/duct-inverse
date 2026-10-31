@@ -596,7 +596,57 @@ fn extent(points: &[Point]) -> Option<(Point, Point)> {
 }
 
 /// The duct-domain elements of an IFC file.
+/// A room: its name and its extent in world coordinates, metres.
+#[derive(Debug, Clone)]
+pub struct IfcSpace {
+    /// Its long name, else its name (often a number).
+    pub name: String,
+    pub min: Point,
+    pub max: Point,
+}
+
+impl IfcSpace {
+    /// Its extent's volume: an L-shaped room's is overstated.
+    pub fn volume(&self) -> f64 {
+        (0..3).map(|k| self.max[k] - self.min[k]).product()
+    }
+}
+
+/// The smallest space a point is in: within its plan, and between its floor
+/// and a metre above its top, where a ceiling diffuser in the void sits.
+pub fn space_at(spaces: &[IfcSpace], p: Point) -> Option<usize> {
+    const PLAN_TOL: f64 = 0.05;
+    const VOID: f64 = 1.0;
+    let inside = |s: &IfcSpace| {
+        (0..2).all(|k| p[k] > s.min[k] - PLAN_TOL && p[k] < s.max[k] + PLAN_TOL) && p[2] > s.min[2] && p[2] < s.max[2] + VOID
+    };
+    (0..spaces.len()).filter(|&i| inside(&spaces[i])).min_by(|&a, &b| spaces[a].volume().total_cmp(&spaces[b].volume()))
+}
+
+/// Every space with a body, its extent in world coordinates.
+fn spaces(file: &File) -> Vec<IfcSpace> {
+    file.of_class("IFCSPACE")
+        .filter_map(|(_, a)| {
+            let place = file.placement(a.get(5).and_then(Arg::id));
+            let body = file.body(a.get(6).and_then(Arg::id));
+            let world: Vec<Point> = body.points.iter().map(|&p| place.apply(p)).collect();
+            let (min, max) = extent(&world)?;
+            let s = |k: usize| match a.get(k) {
+                Some(Arg::Str(v)) => text(v),
+                _ => String::new(),
+            };
+            let name = Some(s(7)).filter(|n| !n.is_empty()).unwrap_or_else(|| s(2));
+            ((0..3).all(|k| max[k] > min[k])).then_some(IfcSpace { name, min, max })
+        })
+        .collect()
+}
+
 pub fn parse(bytes: &[u8]) -> Vec<IfcElement> {
+    parse_with_spaces(bytes).0
+}
+
+/// The duct-domain elements, as [`parse`], and the rooms.
+pub fn parse_with_spaces(bytes: &[u8]) -> (Vec<IfcElement>, Vec<IfcSpace>) {
     let src = String::from_utf8_lossy(bytes);
     let file = File::new(&src);
 
@@ -720,7 +770,7 @@ pub fn parse(bytes: &[u8]) -> Vec<IfcElement> {
             None => out[x].joined.push(y),
         }
     }
-    out
+    (out, spaces(&file))
 }
 
 fn kind_of_class(class: &str) -> NodeKind {
@@ -789,15 +839,16 @@ pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
             node.systems = e.systems.clone();
             node.flow = e.flow;
         }
-        let mut size = None;
+        let (mut size, mut location) = (None, None);
         match e.shape {
             Some(Shape::Axis { start, end, width, height, round }) if node.kind == NodeKind::DuctNoGeometry => {
                 node.kind = NodeKind::Duct { start, end, width, height, round };
                 report.geometry += 1;
             }
             Some(Shape::Box { frame, min, max }) => {
-                node.location.get_or_insert(frame.apply(mul(add(min, max), 0.5)));
-                size = Some(sub(max, min));
+                let centre = frame.apply(mul(add(min, max), 0.5));
+                node.location.get_or_insert(centre);
+                (size, location) = (Some(sub(max, min)), Some(centre));
                 boxes.push((i, frame, min, max));
             }
             _ => {}
@@ -807,6 +858,7 @@ pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
             predefined: e.predefined.clone(),
             description: e.description.clone(),
             size,
+            location,
         });
     }
     for (k, e) in elements.iter().enumerate() {
@@ -865,6 +917,43 @@ mod tests {
         assert!(close(start, [1.0, 2.0, 3.0]) && close(end, [1.0, 2.0, 3.5]), "{start:?} -> {end:?}");
         assert!((width - 0.2).abs() < 1e-9 && (height - 0.2).abs() < 1e-9);
         assert!(round, "its arcs' points lie on the circle its extent inscribes");
+    }
+
+    /// Two spaces, 5 x 4 x 3 m at x = 10 m and a 2 x 2 m one inside it, in
+    /// millimetres: their extents in metres, the long name else the name, and
+    /// a point in both is in the smaller.
+    #[test]
+    fn spaces_and_the_space_a_point_is_in() {
+        let space = |id: u32, at: f64, side: (f64, f64), name: &str, long: &str| {
+            format!(
+                "#{a}=IFCCARTESIANPOINT(({at},0.,0.));\n#{b}=IFCAXIS2PLACEMENT3D(#{a},#4,#2);\n#{c}=IFCLOCALPLACEMENT($,#{b});\n\
+                 #{d}=IFCCARTESIANPOINTLIST2D(((0.,0.),({w},0.),({w},{h}),(0.,{h})));\n#{e}=IFCINDEXEDPOLYCURVE(#{d},$,$);\n\
+                 #{f}=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#{e});\n#{g}=IFCEXTRUDEDAREASOLID(#{f},#23,#4,3000.);\n\
+                 #{i}=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#{g}));\n#{j}=IFCPRODUCTDEFINITIONSHAPE($,$,(#{i}));\n\
+                 #{id}=IFCSPACE('s{id}',$,'{name}',$,$,#{c},#{j},{long},.ELEMENT.,.INTERNAL.,$);\n",
+                a = id + 1, b = id + 2, c = id + 3, d = id + 4, e = id + 5, f = id + 6, g = id + 7, i = id + 8, j = id + 9,
+                w = side.0, h = side.1,
+            )
+        };
+        let src = format!(
+            "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINT((0.,0.,0.));\n#2=IFCDIRECTION((1.,0.,0.));\n#4=IFCDIRECTION((0.,0.,1.));\n\
+             #5=IFCSIUNIT(*,.LENGTHUNIT.,.MILLI.,.METRE.);\n#6=IFCUNITASSIGNMENT((#5));\n#23=IFCAXIS2PLACEMENT3D(#1,$,$);\n{}{}ENDSEC;",
+            space(100, 10000.0, (5000.0, 4000.0), "101", "'Meeting room'"),
+            space(200, 11000.0, (2000.0, 2000.0), "102", "$"),
+        );
+        let (_, spaces) = parse_with_spaces(src.as_bytes());
+        assert_eq!(spaces.len(), 2);
+        let room = &spaces[0];
+        assert_eq!((room.name.as_str(), spaces[1].name.as_str()), ("Meeting room", "102"));
+        let close = |a: Point, b: Point| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-9);
+        assert!(close(room.min, [10.0, 0.0, 0.0]) && close(room.max, [15.0, 4.0, 3.0]), "{room:?}");
+        assert!((room.volume() - 60.0).abs() < 1e-9);
+        // In the ceiling void above the small room; above the large one only;
+        // outside both; too far above.
+        assert_eq!(space_at(&spaces, [12.0, 1.0, 3.3]), Some(1));
+        assert_eq!(space_at(&spaces, [14.0, 3.0, 2.9]), Some(0));
+        assert_eq!(space_at(&spaces, [16.0, 3.0, 2.9]), None);
+        assert_eq!(space_at(&spaces, [14.0, 3.0, 4.5]), None);
     }
 
     /// A square's corners are equidistant from its centre too, but at √2

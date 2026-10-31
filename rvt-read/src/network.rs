@@ -41,6 +41,9 @@ pub struct IfcInfo {
     pub description: String,
     /// Extent in the element's own frame, metres, for non-straight elements.
     pub size: Option<Point>,
+    /// Centre of that extent in the IFC's world coordinates, which a Revit
+    /// file's need not share.
+    pub location: Option<Point>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
