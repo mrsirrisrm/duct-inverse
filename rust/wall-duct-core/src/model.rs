@@ -33,6 +33,7 @@ use crate::physics::{
     elbow::{elbow_loss_db, ElbowKind},
     duct_attenuation::segment_attenuation_db,
     end_reflection::{effective_diameter_rectangular, end_reflection_loss_db, Termination},
+    branch::{branch_change_db, cut_on_hz, Outlets},
     plenum::{plenum_loss_db, Openings},
     regenerative::{fitting_pwl_db, terminal_pwl_db},
     room::receiver_spl,
@@ -140,13 +141,15 @@ pub enum BlockParams {
         alpha: [f64; N_BANDS],
     },
     /// Branch division: the path continues with `flow_ratio` of the flow
-    /// arriving, and carries that share of the sound power, plus the tee's
-    /// own noise at the speed in the main it leaves (`width_m` × `height_m`).
+    /// arriving, plus the tee's own noise at the speed in the main it leaves
+    /// (`width_m` × `height_m`). With the junction's `outlets` the power
+    /// divides by area, with its reflection (ASHRAE); else by flow.
     Branch {
         flow_ratio: f64,
         width_m: f64,
         height_m: f64,
         round: bool,
+        outlets: Option<Outlets>,
     },
 }
 
@@ -224,6 +227,8 @@ pub enum Block {
     Branch {
         log_flow_ratio: DualN,
         main_area_m2: f64,
+        /// The change by area, where the outlets are known.
+        by_area: Option<[f64; N_BANDS]>,
     },
 }
 
@@ -285,10 +290,14 @@ impl Block {
                 openings,
                 alpha,
             },
-            BlockParams::Branch { flow_ratio, width_m, height_m, round } => Self::Branch {
-                log_flow_ratio: v(flow_ratio.ln(), 0),
-                main_area_m2: section_area(DualN::constant(width_m), DualN::constant(height_m), round).value,
-            },
+            BlockParams::Branch { flow_ratio, width_m, height_m, round, outlets } => {
+                let main_area_m2 = section_area(DualN::constant(width_m), DualN::constant(height_m), round).value;
+                Self::Branch {
+                    log_flow_ratio: v(flow_ratio.ln(), 0),
+                    main_area_m2,
+                    by_area: outlets.map(|o| branch_change_db(&o, main_area_m2, cut_on_hz(width_m, height_m, round))),
+                }
+            }
         }
     }
 
@@ -376,13 +385,16 @@ impl Block {
             Self::Plenum { log_length, log_width, log_height, openings, alpha } => {
                 sub_bands(pwl_in, &plenum_loss_db(log_length.exp(), log_width.exp(), log_height.exp(), openings, alpha))
             }
-            Self::Branch { log_flow_ratio, main_area_m2 } => {
-                // Power divides in proportion to flow: 10 log10(ratio), as
-                // 10 / ln 10 · ln(ratio). Band-independent.
-                let division = *log_flow_ratio * (10.0 / std::f64::consts::LN_10);
+            Self::Branch { log_flow_ratio, main_area_m2, by_area } => {
+                // By area where the outlets are known; else in proportion to
+                // flow, 10 log10(ratio) as 10 / ln 10 · ln(ratio).
+                let by_flow = *log_flow_ratio * (10.0 / std::f64::consts::LN_10);
                 let mut out = *pwl_in;
-                for band in &mut out {
-                    *band = *band + division;
+                for (i, band) in out.iter_mut().enumerate() {
+                    *band = match by_area {
+                        Some(change) => *band + change[i],
+                        None => *band + by_flow,
+                    };
                 }
                 // `q` is the flow leaving; the main carried q / ratio.
                 let area = DualN::constant(*main_area_m2);
@@ -663,7 +675,7 @@ mod tests {
         };
         let diffuser = BlockParams::Diffuser { width_m: 20.0, height_m: 20.0, round: false, lw_db: None, termination: Termination::Flush };
         let whole = DuctSystem::from_params(&chain(vec![diffuser])).diffuser_pwl();
-        let half = DuctSystem::from_params(&chain(vec![BlockParams::Branch { flow_ratio: 0.5, width_m: 20.0, height_m: 20.0, round: false }, diffuser]))
+        let half = DuctSystem::from_params(&chain(vec![BlockParams::Branch { flow_ratio: 0.5, width_m: 20.0, height_m: 20.0, round: false, outlets: None }, diffuser]))
             .diffuser_pwl();
         for i in 0..N_BANDS {
             assert_relative_eq!(whole[i].value - half[i].value, 10.0 * 2.0f64.log10(), max_relative = 1e-4);

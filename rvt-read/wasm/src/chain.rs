@@ -7,6 +7,7 @@ use duct_heal::classify::{classify_node, ElementType};
 use duct_heal::{Network, NodeKind};
 use wall_duct_core::model::BlockParams;
 use wall_duct_core::physics::elbow::ElbowKind;
+use wall_duct_core::physics::branch::Outlets;
 use wall_duct_core::physics::end_reflection::Termination;
 use wall_duct_core::physics::plenum::Openings;
 
@@ -69,6 +70,28 @@ fn plenum_openings(net: &Network, path: &[usize], i: usize, size: [f64; 3]) -> O
     Some(Openings { inlet_m2: area(inlet), inlet_span_m: inlet.0.max(inlet.1), outlet_m2: area(outlet), distance_m, cos_theta })
 }
 
+/// The section of the first duct at or below `n` in the tree.
+fn section_below(net: &Network, children: &[Vec<usize>], n: usize) -> Option<Section> {
+    let mut queue = std::collections::VecDeque::from([n]);
+    while let Some(m) = queue.pop_front() {
+        if let NodeKind::Duct { width, height, round, .. } = net.nodes[m].kind {
+            return Some((width, height, round));
+        }
+        queue.extend(&children[m]);
+    }
+    None
+}
+
+/// The outlets of `junction` that carry air, by the first duct below each,
+/// `branch` the one the path takes: `None` if any has no duct to size it.
+fn outlets(net: &Network, children: &[Vec<usize>], flow: &[f64], junction: usize, branch: usize) -> Option<Outlets> {
+    let mut total_m2 = 0.0;
+    for &c in children[junction].iter().filter(|&&c| flow[c] > 0.0) {
+        total_m2 += area(section_below(net, children, c)?);
+    }
+    Some(Outlets { branch_m2: area(section_below(net, children, branch)?), total_m2 })
+}
+
 /// A block and the element it came from, for the report.
 pub struct Mapped {
     pub block: BlockParams,
@@ -78,8 +101,8 @@ pub struct Mapped {
 
 /// The chain for `path`. A branch is inserted wherever the flow drops between
 /// neighbouring elements: takeoffs join mid-duct, so a branch can leave a
-/// duct as well as a fitting.
-pub fn chain(net: &Network, path: &[usize], flow: &[f64]) -> Vec<Mapped> {
+/// duct as well as a fitting. `children` is the path's tree's, by node.
+pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>]) -> Vec<Mapped> {
     let mut out = Vec::new();
     for (i, &n) in path.iter().enumerate().skip(1) {
         let node = &net.nodes[n];
@@ -87,10 +110,16 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64]) -> Vec<Mapped> {
         let mut push = |block, note: String| out.push(Mapped { block, element: node.id, note });
         if flow[n] < flow[prev] * (1.0 - 1e-9) {
             // A path with no duct to size the main has none to carry its noise either.
-            let (width_m, height_m, round) = section_toward(net, path, i, false).unwrap_or((10.0, 10.0, false));
+            let main = section_toward(net, path, i, false);
+            let (width_m, height_m, round) = main.unwrap_or((10.0, 10.0, false));
+            let outlets = main.and(outlets(net, children, flow, prev, n));
+            let by = match outlets {
+                Some(o) => format!("by area {:.0}% of {:.2} m2", 100.0 * o.branch_m2 / o.total_m2, o.total_m2),
+                None => "by flow".into(),
+            };
             push(
-                BlockParams::Branch { flow_ratio: flow[n] / flow[prev], width_m, height_m, round },
-                format!("{:.0} -> {:.0} L/s", flow[prev] * 1000.0, flow[n] * 1000.0),
+                BlockParams::Branch { flow_ratio: flow[n] / flow[prev], width_m, height_m, round, outlets },
+                format!("{:.0} -> {:.0} L/s, {by}", flow[prev] * 1000.0, flow[n] * 1000.0),
             );
         }
         let ty = classify_node(node);

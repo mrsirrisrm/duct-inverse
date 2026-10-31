@@ -7,6 +7,7 @@
 pub mod source;
 pub mod duct_attenuation;
 pub mod attenuator;
+pub mod branch;
 pub mod elbow;
 pub mod end_reflection;
 pub mod plenum;

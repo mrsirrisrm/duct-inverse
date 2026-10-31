@@ -130,3 +130,19 @@ fn analyse_single_in_office() -> Vec<f64> {
     let pwl: [Dual<1>; 8] = std::array::from_fn(|i| c(lw[i]));
     receiver_spl(&pwl, c(86.4), c(1.525)).iter().map(|b| b.value).collect()
 }
+
+/// The junction's two 400 x 300 outlets are twice its main's area: the
+/// branch divides by area, 3.01 dB, and reflects 10 lg(8 / 9) = 0.51 dB more
+/// below the main's 429 Hz cut-on (the tee's own noise is ~50 dB under).
+#[test]
+fn branch_by_area_with_reflection() {
+    let report = analyse(false);
+    let blocks = report["path"]["blocks"].as_array().unwrap();
+    let k = blocks.iter().position(|b| b["type"] == "Branch").expect("a Branch block");
+    assert!(blocks[k]["note"].as_str().unwrap().contains("by area 50%"), "{}", blocks[k]["note"]);
+    let lw = |b: &Value| b["lw_db"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
+    for (i, (before, after)) in lw(&blocks[k - 1]).iter().zip(lw(&blocks[k])).enumerate() {
+        let expected = 10.0 * 2f64.log10() + if i < 3 { -10.0 * (8.0f64 / 9.0).log10() } else { 0.0 };
+        assert!((before - after - expected).abs() < 0.15, "band {i}: {before} -> {after}, expected {expected:.2} dB");
+    }
+}

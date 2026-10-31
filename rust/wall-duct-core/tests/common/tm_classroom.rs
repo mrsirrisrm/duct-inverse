@@ -83,6 +83,7 @@ pub fn params(diffuser_lw: Option<[f64; 8]>) -> Params {
         width_m: w_in * IN,
         height_m: h_in * IN,
         round: false,
+        outlets: None,
     };
     Params {
         source_type: SourceType::Given(FAN_LW),
