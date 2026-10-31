@@ -62,7 +62,7 @@ pub fn join_takeoffs(net: &mut Network) -> TakeoffReport {
             .enumerate()
             .filter(|&(m, _)| m != b && !adj[t].contains(&m))
             .filter_map(|(m, main)| {
-                let NodeKind::Duct { start, end, width, height } = main.kind else {
+                let NodeKind::Duct { start, end, width, height, .. } = main.kind else {
                     return None;
                 };
                 let m_dir = sub(end, start);
@@ -153,7 +153,7 @@ mod tests {
     }
 
     fn duct(id: i64, start: Point, end: Point) -> Node {
-        node(id, NodeKind::Duct { start, end, width: 0.4, height: 0.2 }, "", start)
+        node(id, NodeKind::Duct { start, end, width: 0.4, height: 0.2, round: false }, "", start)
     }
 
     /// Main along x, branch leaving along y from the main's side wall, and a
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn takeoff_off_the_end_of_every_main_is_reported() {
         let (mut net, _, _) = tee();
-        net.nodes[0].kind = NodeKind::Duct { start: [0.0; 3], end: [4.0, 0.0, 0.0], width: 0.4, height: 0.2 };
+        net.nodes[0].kind = NodeKind::Duct { start: [0.0; 3], end: [4.0, 0.0, 0.0], width: 0.4, height: 0.2, round: false };
         let report = join_takeoffs(&mut net);
         assert_eq!((report.joined, report.unmatched), (0, vec![4]));
     }

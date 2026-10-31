@@ -68,14 +68,14 @@ fn main() {
     let c = D::constant;
     for (w, h) in [(0.3, 0.3), (0.6, 0.3), (0.6, 0.6), (1.2, 0.6)] {
         header(&format!("Unlined duct {w} x {h} m, dB/m"));
-        let e = segment_attenuation_db(c(1.0), c(w), c(h), c(0.0));
+        let e = segment_attenuation_db(c(1.0), c(w), c(h), c(0.0), false);
         row("engine", |i| e[i].value);
         row("ASHRAE 1991 equations", |i| ashrae_unlined(w, h, OCTAVE_BANDS_HZ[i]));
     }
 
     for w in [0.15, 0.25, 0.5, 1.0] {
         header(&format!("Square elbow {w} x {w} m, no vanes: loss, dB"));
-        let e = elbow_loss_db(c(w), ElbowKind::Mitred);
+        let e = elbow_loss_db(c(w), ElbowKind::Mitred, false);
         row("engine", |i| e[i].value);
         row("ASHRAE elbow table", |i| ashrae_elbow(w, OCTAVE_BANDS_HZ[i]));
     }

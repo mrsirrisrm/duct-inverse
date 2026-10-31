@@ -80,8 +80,15 @@ fn damper_k_db(closed_deg: f64) -> f64 {
     }
 }
 
+/// A section's flow area: `width` x `height`, or for a round one the circle
+/// of diameter `width`.
+fn section_area(width: DualN, height: DualN, round: bool) -> DualN {
+    if round { width * width * (std::f64::consts::PI / 4.0) } else { width * height }
+}
+
 /// Linear-space parameters for a single block. Only fields relevant to the
-/// variant are read; the others are ignored.
+/// variant are read; the others are ignored. A `round` section is of
+/// diameter `width_m`, with `height_m` the same.
 #[derive(Debug, Clone, Copy)]
 pub enum BlockParams {
     Segment {
@@ -89,17 +96,23 @@ pub enum BlockParams {
         width_m: f64,
         height_m: f64,
         lining_m: f64,
+        round: bool,
     },
+    /// An elbow, `width_m` across in the plane of the bend; `lined` if it
+    /// and the ductwork either side are.
     Bend {
         width_m: f64,
         height_m: f64,
         kind: ElbowKind,
+        lined: bool,
+        round: bool,
     },
     /// A damper, `closed_deg` from fully open; a VAV box's is one.
     Damper {
         width_m: f64,
         height_m: f64,
         closed_deg: f64,
+        round: bool,
     },
     Attenuator {
         length_m: f64,
@@ -111,6 +124,7 @@ pub enum BlockParams {
     Diffuser {
         width_m: f64,
         height_m: f64,
+        round: bool,
     },
     /// Branch division: the path continues with `flow_ratio` of the flow
     /// arriving, and carries that share of the sound power, plus the tee's
@@ -119,6 +133,7 @@ pub enum BlockParams {
         flow_ratio: f64,
         width_m: f64,
         height_m: f64,
+        round: bool,
     },
 }
 
@@ -157,16 +172,20 @@ pub enum Block {
         log_width: DualN,
         log_height: DualN,
         lining_raw: DualN,
+        round: bool,
     },
     Bend {
         log_width: DualN,
         log_height: DualN,
         kind: ElbowKind,
+        lined: bool,
+        round: bool,
     },
     Damper {
         log_width: DualN,
         log_height: DualN,
         closed_deg: f64,
+        round: bool,
     },
     Attenuator {
         length_raw: DualN,
@@ -176,6 +195,7 @@ pub enum Block {
     Diffuser {
         log_width: DualN,
         log_height: DualN,
+        round: bool,
     },
     Branch {
         log_flow_ratio: DualN,
@@ -196,21 +216,26 @@ impl Block {
                 width_m,
                 height_m,
                 lining_m,
+                round,
             } => Self::Segment {
                 log_length: v(length_m.ln(), 0),
                 log_width: v(width_m.ln(), 1),
                 log_height: v(height_m.ln(), 2),
                 lining_raw: v(lining_m, 3),
+                round,
             },
-            BlockParams::Bend { width_m, height_m, kind } => Self::Bend {
+            BlockParams::Bend { width_m, height_m, kind, lined, round } => Self::Bend {
                 log_width: v(width_m.ln(), 0),
                 log_height: v(height_m.ln(), 1),
                 kind,
+                lined,
+                round,
             },
-            BlockParams::Damper { width_m, height_m, closed_deg } => Self::Damper {
+            BlockParams::Damper { width_m, height_m, closed_deg, round } => Self::Damper {
                 log_width: v(width_m.ln(), 0),
                 log_height: v(height_m.ln(), 1),
                 closed_deg,
+                round,
             },
             BlockParams::Attenuator {
                 length_m,
@@ -222,13 +247,14 @@ impl Block {
                 free_area_raw: v(free_area_ratio, 1),
                 splitter_raw: v(splitter_m, 2),
             },
-            BlockParams::Diffuser { width_m, height_m } => Self::Diffuser {
+            BlockParams::Diffuser { width_m, height_m, round } => Self::Diffuser {
                 log_width: v(width_m.ln(), 0),
                 log_height: v(height_m.ln(), 1),
+                round,
             },
-            BlockParams::Branch { flow_ratio, width_m, height_m } => Self::Branch {
+            BlockParams::Branch { flow_ratio, width_m, height_m, round } => Self::Branch {
                 log_flow_ratio: v(flow_ratio.ln(), 0),
-                main_area_m2: width_m * height_m,
+                main_area_m2: section_area(DualN::constant(width_m), DualN::constant(height_m), round).value,
             },
         }
     }
@@ -251,23 +277,26 @@ impl Block {
                 log_width,
                 log_height,
                 lining_raw,
+                round,
             } => {
                 let length = log_length.exp();
                 let width = log_width.exp();
                 let height = log_height.exp();
                 let lining = lining_raw.max_f(0.0);
-                let loss = segment_attenuation_db(length, width, height, lining);
+                let loss = segment_attenuation_db(length, width, height, lining, *round);
                 sub_bands(pwl_in, &loss)
             }
             Self::Bend {
                 log_width,
                 log_height,
                 kind,
+                lined,
+                round,
             } => {
                 let width = log_width.exp();
                 let height = log_height.exp();
-                let after_loss = sub_bands(pwl_in, &elbow_loss_db(width, *kind));
-                let area = width * height;
+                let after_loss = sub_bands(pwl_in, &elbow_loss_db(width, *kind, *lined));
+                let area = section_area(width, height, *round);
                 let regen = fitting_pwl_db(DualN::constant(kind.regen_k_db()), q / area, area);
                 db_add(&after_loss, &regen)
             }
@@ -275,8 +304,9 @@ impl Block {
                 log_width,
                 log_height,
                 closed_deg,
+                round,
             } => {
-                let area = log_width.exp() * log_height.exp();
+                let area = section_area(log_width.exp(), log_height.exp(), *round);
                 let regen = fitting_pwl_db(DualN::constant(damper_k_db(*closed_deg)), q / area, area);
                 db_add(pwl_in, &regen)
             }
@@ -294,12 +324,13 @@ impl Block {
             Self::Diffuser {
                 log_width,
                 log_height,
+                round,
             } => {
                 let width = log_width.exp();
                 let height = log_height.exp();
-                let d_eff = effective_diameter_rectangular(width, height);
+                let d_eff = if *round { width } else { effective_diameter_rectangular(width, height) };
                 let erl = end_reflection_loss_db(d_eff);
-                let area = width * height;
+                let area = section_area(width, height, *round);
                 let regen = terminal_pwl_db(q / area, area);
                 let after_erl = sub_bands(pwl_in, &erl);
                 db_add(&after_erl, &regen)
@@ -348,6 +379,7 @@ impl Params {
                     width_m: 0.4,
                     height_m: 0.3,
                     lining_m: 0.025,
+                    round: false,
                 },
                 BlockParams::Attenuator {
                     length_m: 1.2,
@@ -359,6 +391,7 @@ impl Params {
                 BlockParams::Diffuser {
                     width_m: 0.4,
                     height_m: 0.3,
+                    round: false,
                 },
             ],
         }
@@ -472,27 +505,27 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
-    /// The demo case's receiver SPL, pinned. The elements follow ASHRAE's
-    /// published methods (see `examples/reference.rs`), which the Python PoC
-    /// did not, so this no longer matches it.
+    /// The demo case's receiver SPL, pinned. The elements follow published
+    /// methods (`examples/reference.rs`, `examples/tm_classroom.rs`), which
+    /// the Python PoC did not, so this no longer matches it.
     #[test]
     fn demo_case_is_unchanged() {
         let sys = DuctSystem::from_params(&Params::demo());
         let spl = sys.receiver_spl_values();
         let expected: [f64; N_BANDS] = [
-            44.096531638082034,
-            43.139043703016526,
-            32.31057615552124,
-            21.087519954001806,
-            15.05759263116579,
-            10.056977307606012,
-            16.71481110344483,
-            17.977697506862796,
+            40.99783013533962,
+            41.70445980221939,
+            33.648369870931226,
+            21.338597579025727,
+            14.995271089316077,
+            9.093815346195974,
+            4.019002138144987,
+            1.9544933533847804,
         ];
         for i in 0..N_BANDS {
             assert_relative_eq!(spl[i], expected[i], max_relative = 1e-6);
         }
-        assert_eq!(sys.nc(), 24);
+        assert_eq!(sys.nc(), 23);
     }
 
     /// Sanity: every *occupied* slot (system slots + the slots actually
@@ -535,11 +568,14 @@ mod tests {
                     width_m: 0.35,
                     height_m: 0.25,
                     lining_m: 0.025,
+                    round: false,
                 },
                 BlockParams::Bend {
                     width_m: 0.35,
                     height_m: 0.25,
                     kind: ElbowKind::Mitred,
+                    lined: false,
+                    round: false,
                 },
                 BlockParams::Attenuator {
                     length_m: 1.0,
@@ -551,6 +587,7 @@ mod tests {
                 BlockParams::Diffuser {
                     width_m: 0.35,
                     height_m: 0.25,
+                    round: false,
                 },
             ],
         };
@@ -579,9 +616,9 @@ mod tests {
             receiver_distance_m: 2.0,
             blocks,
         };
-        let diffuser = BlockParams::Diffuser { width_m: 20.0, height_m: 20.0 };
+        let diffuser = BlockParams::Diffuser { width_m: 20.0, height_m: 20.0, round: false };
         let whole = DuctSystem::from_params(&chain(vec![diffuser])).diffuser_pwl();
-        let half = DuctSystem::from_params(&chain(vec![BlockParams::Branch { flow_ratio: 0.5, width_m: 20.0, height_m: 20.0 }, diffuser]))
+        let half = DuctSystem::from_params(&chain(vec![BlockParams::Branch { flow_ratio: 0.5, width_m: 20.0, height_m: 20.0, round: false }, diffuser]))
             .diffuser_pwl();
         for i in 0..N_BANDS {
             assert_relative_eq!(whole[i].value - half[i].value, 10.0 * 2.0f64.log10(), max_relative = 1e-4);

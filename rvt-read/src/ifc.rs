@@ -64,8 +64,9 @@ pub struct IfcElement {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Shape {
-    /// An extruded straight: centreline and section, metres.
-    Axis { start: Point, end: Point, width: f64, height: f64 },
+    /// An extruded straight: centreline and section, metres; a round one's
+    /// width and height its diameter.
+    Axis { start: Point, end: Point, width: f64, height: f64, round: bool },
     /// Anything else: its frame and the extent of its geometry in it.
     Box { frame: Frame, min: Point, max: Point },
 }
@@ -296,7 +297,7 @@ struct File<'a> {
 #[derive(Default)]
 struct Body {
     points: Vec<Point>,
-    extrusions: Vec<(Point, Point, f64, f64)>,
+    extrusions: Vec<(Point, Point, f64, f64, bool)>,
 }
 
 impl<'a> File<'a> {
@@ -432,29 +433,30 @@ impl<'a> File<'a> {
         }
     }
 
-    /// The 2D extent of a profile, file units scaled.
-    fn profile_extent(&self, id: Option<u64>) -> Option<([f64; 2], [f64; 2])> {
+    /// The 2D extent of a profile, file units scaled, and whether it is a
+    /// circle.
+    fn profile_extent(&self, id: Option<u64>) -> Option<([f64; 2], [f64; 2], bool)> {
         let (class, a) = self.get(id?)?;
         // Parametric profiles are centred on their position (argument 2).
         let centre = || self.axis_placement(a.get(2).and_then(Arg::id)).o;
-        let half = match class {
+        let (half, round) = match class {
             "IFCRECTANGLEPROFILEDEF" | "IFCRECTANGLEHOLLOWPROFILEDEF" => {
-                [a.get(3)?.num()? * self.scale / 2.0, a.get(4)?.num()? * self.scale / 2.0]
+                ([a.get(3)?.num()? * self.scale / 2.0, a.get(4)?.num()? * self.scale / 2.0], false)
             }
             "IFCCIRCLEPROFILEDEF" | "IFCCIRCLEHOLLOWPROFILEDEF" => {
                 let r = a.get(3)?.num()? * self.scale;
-                [r, r]
+                ([r, r], true)
             }
             "IFCARBITRARYCLOSEDPROFILEDEF" | "IFCARBITRARYPROFILEDEFWITHVOIDS" => {
                 let mut points = Vec::new();
                 self.collect_points(a.get(2)?.id()?, &Frame::WORLD, &mut points, &mut HashSet::new());
                 let (min, max) = extent(&points)?;
-                return Some(([min[0], min[1]], [max[0], max[1]]));
+                return Some(([min[0], min[1]], [max[0], max[1]], on_inscribed_circle(&points, min, max)));
             }
             _ => return None,
         };
         let c = centre();
-        Some(([c[0] - half[0], c[1] - half[1]], [c[0] + half[0], c[1] + half[1]]))
+        Some(([c[0] - half[0], c[1] - half[1]], [c[0] + half[0], c[1] + half[1]], round))
     }
 
     /// Every point reachable from `id` (face sets, breps, polylines), in `frame`.
@@ -513,12 +515,12 @@ impl<'a> File<'a> {
                 }
             }
             "IFCEXTRUDEDAREASOLID" => {
-                let Some((min, max)) = self.profile_extent(a.first().and_then(Arg::id)) else { return };
+                let Some((min, max, round)) = self.profile_extent(a.first().and_then(Arg::id)) else { return };
                 let at = frame.then(&self.axis_placement(a.get(1).and_then(Arg::id)));
                 let (Some(dir), Some(depth)) = (self.direction(a.get(2)), a.get(3).and_then(Arg::num)) else { return };
                 let run = mul(at.rotate(dir), depth * self.scale);
                 let start = at.apply([(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0, 0.0]);
-                body.extrusions.push((start, add(start, run), max[0] - min[0], max[1] - min[1]));
+                body.extrusions.push((start, add(start, run), max[0] - min[0], max[1] - min[1], round));
                 for corner in [[min[0], min[1]], [min[0], max[1]], [max[0], min[1]], [max[0], max[1]]] {
                     let p = at.apply([corner[0], corner[1], 0.0]);
                     body.points.extend([p, add(p, run)]);
@@ -578,6 +580,14 @@ impl<'a> File<'a> {
     }
 }
 
+/// Whether a profile's points lie on the circle its square extent
+/// inscribes: every one at the half-width from the centre, within 2 %.
+fn on_inscribed_circle(points: &[Point], min: Point, max: Point) -> bool {
+    let (half, c) = ((max[0] - min[0]) / 2.0, [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0]);
+    let square = (max[1] - min[1] - 2.0 * half).abs() < 0.02 * half;
+    square && points.len() >= 4 && points.iter().all(|p| ((p[0] - c[0]).hypot(p[1] - c[1]) - half).abs() < 0.02 * half)
+}
+
 fn extent(points: &[Point]) -> Option<(Point, Point)> {
     let first = *points.first()?;
     Some(points.iter().fold((first, first), |(lo, hi), p| {
@@ -633,8 +643,8 @@ pub fn parse(bytes: &[u8]) -> Vec<IfcElement> {
         let place = file.placement(a.get(5).and_then(Arg::id));
         let body = file.body(a.get(6).and_then(Arg::id));
         let shape = match body.extrusions.first() {
-            Some(&(start, end, width, height)) if class == "IFCDUCTSEGMENT" && body.extrusions.len() == 1 => {
-                Some(Shape::Axis { start: place.apply(start), end: place.apply(end), width, height })
+            Some(&(start, end, width, height, round)) if class == "IFCDUCTSEGMENT" && body.extrusions.len() == 1 => {
+                Some(Shape::Axis { start: place.apply(start), end: place.apply(end), width, height, round })
             }
             _ => extent(&body.points).map(|(min, max)| Shape::Box { frame: place, min, max }),
         };
@@ -781,8 +791,8 @@ pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
         }
         let mut size = None;
         match e.shape {
-            Some(Shape::Axis { start, end, width, height }) if node.kind == NodeKind::DuctNoGeometry => {
-                node.kind = NodeKind::Duct { start, end, width, height };
+            Some(Shape::Axis { start, end, width, height, round }) if node.kind == NodeKind::DuctNoGeometry => {
+                node.kind = NodeKind::Duct { start, end, width, height, round };
                 report.geometry += 1;
             }
             Some(Shape::Box { frame, min, max }) => {
@@ -850,10 +860,21 @@ mod tests {
         assert_eq!((e.tag, e.class.as_str(), e.predefined.as_str(), e.name.as_str()), (Some(42), "IFCDUCTSEGMENT", "RIGIDSEGMENT", "Pyöreä kanava"));
         // The element's x axis is its RefDirection, world z; the extrusion runs
         // along its position's z, which is the element's x: so up, 500 mm.
-        let Some(Shape::Axis { start, end, width, height }) = e.shape else { panic!("no axis") };
+        let Some(Shape::Axis { start, end, width, height, round }) = e.shape else { panic!("no axis") };
         let close = |a: Point, b: Point| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-9);
         assert!(close(start, [1.0, 2.0, 3.0]) && close(end, [1.0, 2.0, 3.5]), "{start:?} -> {end:?}");
         assert!((width - 0.2).abs() < 1e-9 && (height - 0.2).abs() < 1e-9);
+        assert!(round, "its arcs' points lie on the circle its extent inscribes");
+    }
+
+    /// A square's corners are equidistant from its centre too, but at √2
+    /// times its half-width: not round.
+    #[test]
+    fn square_profile_is_not_round() {
+        let corners = [[-1.0, -1.0, 0.0], [-1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [1.0, -1.0, 0.0]];
+        assert!(!on_inscribed_circle(&corners, [-1.0, -1.0, 0.0], [1.0, 1.0, 0.0]));
+        let circle: Vec<Point> = (0..12).map(|k| f64::from(k) * std::f64::consts::PI / 6.0).map(|t| [t.cos(), t.sin(), 0.0]).collect();
+        assert!(on_inscribed_circle(&circle, [-1.0, -1.0, 0.0], [1.0, 1.0, 0.0]));
     }
 
     /// A duct and a terminal joined port to port (IFC2x3 style), the

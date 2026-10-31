@@ -73,15 +73,15 @@ impl InputBlock {
     fn into_params(self) -> BlockParams {
         match self {
             Self::Segment { length_m, width_m, height_m, lining_m } => {
-                BlockParams::Segment { length_m, width_m, height_m, lining_m }
+                BlockParams::Segment { length_m, width_m, height_m, lining_m, round: false }
             }
-            Self::Bend { width_m, height_m } => BlockParams::Bend { width_m, height_m, kind: ElbowKind::Mitred },
+            Self::Bend { width_m, height_m } => BlockParams::Bend { width_m, height_m, kind: ElbowKind::Mitred, lined: false, round: false },
             Self::Attenuator {
                 length_m, width_m, height_m, free_area_ratio, splitter_m,
             } => BlockParams::Attenuator {
                 length_m, width_m, height_m, free_area_ratio, splitter_m,
             },
-            Self::Diffuser { width_m, height_m } => BlockParams::Diffuser { width_m, height_m },
+            Self::Diffuser { width_m, height_m } => BlockParams::Diffuser { width_m, height_m, round: false },
         }
     }
 }
@@ -151,7 +151,7 @@ fn is_constraint_slot(slot: usize) -> bool {
 fn describe_block(idx: usize, bp: &BlockParams, q_m3s: f64) -> BlockSummary {
     let mm = |x: f64| (x * 1000.0) as i64;
     let label = match *bp {
-        BlockParams::Segment { length_m, width_m, height_m, lining_m } => {
+        BlockParams::Segment { length_m, width_m, height_m, lining_m, .. } => {
             let v = q_m3s / (width_m * height_m);
             let lining = if lining_m > 1e-4 {
                 format!(", lined {} mm", mm(lining_m))
@@ -163,14 +163,14 @@ fn describe_block(idx: usize, bp: &BlockParams, q_m3s: f64) -> BlockSummary {
                 mm(width_m), mm(height_m),
             )
         }
-        BlockParams::Bend { width_m, height_m, kind } => {
+        BlockParams::Bend { width_m, height_m, kind, .. } => {
             let v = q_m3s / (width_m * height_m);
             format!(
                 "Bend {}×{} mm, {kind:?} · v ≈ {v:.1} m/s",
                 mm(width_m), mm(height_m),
             )
         }
-        BlockParams::Damper { width_m, height_m, closed_deg } => {
+        BlockParams::Damper { width_m, height_m, closed_deg, .. } => {
             let v = q_m3s / (width_m * height_m);
             format!(
                 "Damper {}×{} mm, {closed_deg:.0}° closed · v ≈ {v:.1} m/s",
@@ -189,7 +189,7 @@ fn describe_block(idx: usize, bp: &BlockParams, q_m3s: f64) -> BlockSummary {
                 mm(length_m), free_area_ratio * 100.0, mm(splitter_m), v_face, v_free,
             )
         }
-        BlockParams::Diffuser { width_m, height_m } => {
+        BlockParams::Diffuser { width_m, height_m, .. } => {
             let v = q_m3s / (width_m * height_m);
             format!(
                 "Diffuser {}×{} mm · v ≈ {v:.1} m/s",
@@ -418,7 +418,7 @@ mod tests {
     use super::*;
     use wall_duct_core::model::Params as CoreParams;
 
-    /// End-to-end: the demo case must rate NC=24 and hand back 8 band facts,
+    /// End-to-end: the demo case must rate NC=23 and hand back 8 band facts,
     /// some controlling bands, at least one design-lever sensitivity, and
     /// three block summaries.
     #[test]
@@ -426,7 +426,7 @@ mod tests {
         let params = CoreParams::demo();
         let out = evaluate_params("FCU (ceiling)".to_string(), params);
 
-        assert_eq!(out.nc, 24);
+        assert_eq!(out.nc, 23);
         assert_eq!(out.receiver_spl_bands.len(), 8);
         assert_eq!(out.blocks.len(), 3);
         assert_eq!(out.blocks[0].type_name, "Segment");

@@ -1,5 +1,5 @@
 // Node smoke test: evaluate the demo case through the compiled WASM and
-// assert NC=24. Kept as a .mjs file so Node picks up ES-module conventions
+// assert NC=23. Kept as a .mjs file so Node picks up ES-module conventions
 // for the generated wrapper.
 import { evaluate, version } from "./pkg-node/wall_duct_wasm.js";
 
@@ -31,8 +31,8 @@ for (const b of out.blocks) {
   console.log(`  [${b.index}] ${b.type_name}: ${b.label}`);
 }
 
-if (out.nc !== 24) {
-  console.error(`FAIL: expected NC=24, got ${out.nc}`);
+if (out.nc !== 23) {
+  console.error(`FAIL: expected NC=23, got ${out.nc}`);
   process.exit(1);
 }
 console.log("OK");

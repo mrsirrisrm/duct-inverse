@@ -28,9 +28,12 @@ npm run dev
   Rust toolchain). Regenerate with `./scripts/rebuild-wasm.sh`.
 - `rust/wall-duct-core/` — pure Rust physics + forward-mode autodiff
   (`Dual<N>`). Its elements follow published methods (ASHRAE duct, elbow and
-  end reflection losses, Schultz's room equation, Woods' fitting regen, CIBSE
-  diffuser noise, TM 5-805-4 attenuators); `cargo run --example reference`
-  sets them beside their references.
+  end reflection losses, Reynolds & Bevirt lined duct, TM 5-805-4 lined
+  elbows and attenuators, Schultz's room equation, Woods' fitting regen, CIBSE
+  diffuser noise); `cargo run --example reference` sets them beside their
+  references, and `cargo run --example tm_classroom` runs TM 5-805-4's worked
+  supply path (§7-6) element by element, which `tests/tm_classroom.rs` holds
+  the engine to.
 - `rust/wall-duct-wasm/` — `#[wasm_bindgen]` wrapper exposing a single
   `evaluate(params)` entry point returning a `DesignFacts` JSON object.
 - `duct_poc/` — the original Python / PyTorch PoC, which the Rust core began

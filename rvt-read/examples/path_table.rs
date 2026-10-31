@@ -23,7 +23,7 @@ fn main() {
     for (i, &n) in cp.path.iter().enumerate() {
         let node = &net.nodes[n];
         let (size, len, v) = match node.kind {
-            NodeKind::Duct { start, end, width, height } => {
+            NodeKind::Duct { start, end, width, height, .. } => {
                 let l = ((end[0] - start[0]).powi(2) + (end[1] - start[1]).powi(2) + (end[2] - start[2]).powi(2)).sqrt();
                 (
                     format!("{:.0}x{:.0}", width * 1000.0, height * 1000.0),

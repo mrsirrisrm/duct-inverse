@@ -6,8 +6,9 @@ pub type Point = [f64; 3];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeKind {
-    /// Straight duct with a decoded centreline and section.
-    Duct { start: Point, end: Point, width: f64, height: f64 },
+    /// Straight duct with a decoded centreline and section; a round one's
+    /// width and height are its diameter.
+    Duct { start: Point, end: Point, width: f64, height: f64, round: bool },
     /// Straight duct whose geometry rvt-rs did not decode (bounding box only).
     DuctNoGeometry,
     Fitting,

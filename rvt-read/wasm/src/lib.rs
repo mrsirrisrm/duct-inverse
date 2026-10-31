@@ -195,10 +195,12 @@ pub fn analyse_bytes(
         q = block.flow_out(q);
         pwl = block.forward(&pwl, q);
         let velocity = match m.block {
-            BlockParams::Segment { width_m, height_m, .. }
-            | BlockParams::Bend { width_m, height_m, .. }
-            | BlockParams::Attenuator { width_m, height_m, .. }
-            | BlockParams::Diffuser { width_m, height_m } => Some(q.value / (width_m * height_m)),
+            BlockParams::Segment { width_m, height_m, round, .. }
+            | BlockParams::Bend { width_m, height_m, round, .. }
+            | BlockParams::Diffuser { width_m, height_m, round } => {
+                Some(q.value / if round { std::f64::consts::FRAC_PI_4 * width_m * width_m } else { width_m * height_m })
+            }
+            BlockParams::Attenuator { width_m, height_m, .. } => Some(q.value / (width_m * height_m)),
             _ => None,
         };
         blocks.push(json!({
@@ -246,7 +248,7 @@ pub fn analyse_bytes(
         "assumptions": [
             if source.is_some() { "source: the unit's sound power as given" } else { "source: a forward-curved fan at the unit's flow and 250 Pa (no sound data given)" },
             "room: 50 m3, receiver 2 m, Schultz's equation for a normally furnished room",
-            "ducts unlined; a tee's loss is its power division; transitions not modelled",
+            "ducts unlined, round where the IFC profile or the type name says so; a tee's loss is its power division; transitions not modelled",
             "regen of bends, tees and dampers by Woods' method; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
             "dampers open; a VAV box is its damper, 15° closed",
             "silencers: length from the IFC, section from the duct, free area 0.5 and 100 mm splitters assumed",
