@@ -155,11 +155,13 @@ const OUTLETS: &[(&[Category], &[&str], Option<ElementType>)] = &[
     // AU/NZ schedule tags: SAG/RAG/EAG grilles, SAD/RAD/EAD diffusers.
     (TERMINAL, &["sidewall", "wall", "grille", "grill", "register", "reg", "transfer", "sag", "rag", "eag"], Some(GrilleOrRegister)),
     (TERMINAL, &["diffuser", "diffuseur", "diff", "swirl", "slot", "cone", "valve", "sad", "rad", "ead"], Some(DiffuserCeiling)),
-    (FITTING, &["takeoff", "take off", "tap", "shoe", "spigot", "spin in", "boot"], Some(BranchTakeoff)),
-    (FITTING, &["tee", "wye", "cross", "y piece", "junction", "pants", "breeches"], Some(TeeOrWye)),
+    // Finnish, as MagiCAD names them: lähtökaulus (branch collar), T-/X-yhde
+    // (tee, cross), muuntoyhde (transition).
+    (FITTING, &["takeoff", "take off", "tap", "shoe", "spigot", "spin in", "boot", "lähtökaulus"], Some(BranchTakeoff)),
+    (FITTING, &["tee", "wye", "cross", "y piece", "junction", "pants", "breeches", "t yhde", "x yhde"], Some(TeeOrWye)),
     (
         FITTING,
-        &["transition", "reducer", "expander", "increaser", "taper", "to round", "concentric", "eccentric"],
+        &["transition", "reducer", "expander", "increaser", "taper", "to round", "concentric", "eccentric", "muuntoyhde"],
         Some(Transition),
     ),
 ];
@@ -186,7 +188,8 @@ fn unit(w: &Words) -> Option<Option<ElementType>> {
 /// Bends need the qualifier: vanes, mitred or radiused. Round elbows are
 /// radiused or gored; an unqualified rectangular one is left to the classifier.
 fn elbow(w: &Words) -> Option<ElementType> {
-    if !w.any(&["elbow", "bend", "elb", "ell"]) {
+    // Kulmayhde: Finnish, as MagiCAD names a bend.
+    if !w.any(&["elbow", "bend", "elb", "ell", "kulmayhde"]) {
         return None;
     }
     if w.any(&["no vanes", "without vanes"]) {
@@ -195,7 +198,7 @@ fn elbow(w: &Words) -> Option<ElementType> {
         Some(ElbowMitredVanes)
     } else if w.any(&["mitred", "mitered", "mitre", "miter", "square", "sharp"]) {
         Some(ElbowMitred)
-    } else if w.any(&["radius", "radiused", "smooth", "gored", "pleated", "segmented", "round", "d", "r w"]) {
+    } else if w.any(&["radius", "radiused", "smooth", "gored", "pleated", "segmented", "round", "pyöreä", "d", "r w"]) {
         Some(ElbowRadius)
     } else {
         None
@@ -227,9 +230,10 @@ pub fn classify(category: Category, family: &str, type_name: &str) -> Option<Ele
     if let Some(ty) = elbow(&w) {
         return Some(ty);
     }
-    if w.any(&["endcap", "end cap", "cap", "blank", "blanking"]) {
+    // Tulppa (plug) and liitinyhde (coupling): Finnish.
+    if w.any(&["endcap", "end cap", "cap", "blank", "blanking", "tulppa"]) {
         Some(EndCap)
-    } else if w.any(&["union", "coupling", "connector", "joint", "access door", "access panel"]) {
+    } else if w.any(&["union", "coupling", "connector", "joint", "access door", "access panel", "liitinyhde"]) {
         Some(Coupling)
     } else {
         None
@@ -246,6 +250,10 @@ fn from_ifc(ifc: &IfcInfo) -> Option<ElementType> {
         ("IFCAIRTERMINALBOX", _) => Some(VavTerminalUnit),
         ("IFCAIRTOAIRHEATRECOVERY", _) => Some(AirHandlingUnit),
         ("IFCDUCTFITTING", "TRANSITION") => Some(Transition),
+        // MagiCAD marks couplings and branch collars JUNCTION too; neither a
+        // tee nor a coupling is a block, so the confusion costs nothing.
+        ("IFCDUCTFITTING", "JUNCTION") => Some(TeeOrWye),
+        ("IFCDUCTFITTING", "CONNECTOR") => Some(Coupling),
         ("IFCDUCTFITTING", "BEND") => elbow(&Words::new(&format!("bend {}", ifc.description))),
         _ => None,
     }
@@ -272,6 +280,13 @@ mod tests {
         assert_eq!(c(Terminal, "M_Supply Diffuser - Sidewall"), Some("grille_or_register"));
         assert_eq!(c(Terminal, "Air Terminal-Supply Cap-FB"), Some("external_cap_or_louvre"));
         assert_eq!(c(Fitting, "Round Endcap"), Some("end_cap"));
+        // MagiCAD's Finnish names.
+        assert_eq!(c(Fitting, "Pyöreä kanava FeZn - T-yhde"), Some("tee_or_wye"));
+        assert_eq!(c(Fitting, "Pyöreä kanava FeZn - Lähtökaulus"), Some("branch_takeoff"));
+        assert_eq!(c(Fitting, "Pyöreä kanava FeZn - Liitinyhde"), Some("coupling"));
+        assert_eq!(c(Fitting, "Pyöreä kanava FeZn - Tulppa"), Some("end_cap"));
+        assert_eq!(c(Fitting, "Pyöreä kanava FeZn - Kulmayhde"), Some("elbow_radius"));
+        assert_eq!(c(Fitting, "Suorakaidekanava FeZn - Muuntoyhde 01"), Some("transition"));
         assert_eq!(c(Fitting, "XX_Duct_Bend_Square_NoVanes"), Some("elbow_mitred"));
         assert_eq!(c(Equipment, "Heat Pump"), None);
         assert_eq!(c(Equipment, "Fan Coil Unit"), Some("fan_coil_or_heat_pump"));

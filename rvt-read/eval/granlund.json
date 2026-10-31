@@ -1,5 +1,5 @@
 {
- "note": "Distinct names from Granlund's BIM4LCA Housing Concrete HVAC model (MagiCAD for Revit 2024; VTT, CC BY-SA 4.0). Labels from its IFC export's classes and types and the engineer's ventilation schedule; accessories rvt-rs did not decode in this file are taken from the IFC. Not used to tune the rules.",
+ "note": "Distinct names from Granlund's BIM4LCA Housing Concrete HVAC model (MagiCAD for Revit 2024; VTT, CC BY-SA 4.0). Labels from its IFC export's classes and types and the engineer's ventilation schedule; accessories rvt-rs did not decode in this file are taken from the IFC. Not used to tune the rules, but for its Finnish fitting words (T-yhde, lähtökaulus, liitinyhde, tulppa, muuntoyhde, kulmayhde, pyöreä), added from this model's names on 2026-10-31: for those it is no longer held out.",
  "items": [
   {
    "category": "Air Terminals",

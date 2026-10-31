@@ -92,7 +92,8 @@ pub fn build<'a>(elements: impl IntoIterator<Item = Element<'a>>, decoded: &Hash
                 element.num("m_curve_height"),
             ) {
                 let name = format!("{} {}", element.str("m_family_name"), element.str("m_type_name")).to_lowercase();
-                let round = ["round", "circular", "spiral"].iter().any(|k| name.contains(k));
+                // English, Finnish (pyöreä) and the Scandinavian and German rund.
+                let round = ["round", "circular", "spiral", "pyöreä", "rund"].iter().any(|k| name.contains(k));
                 // A round duct's one dimension is its diameter.
                 let (w, h) = if round { (w.max(h), w.max(h)) } else { (w, h) };
                 kind = NodeKind::Duct { start, end, width: w * FT, height: h * FT, round };
