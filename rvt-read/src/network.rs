@@ -46,6 +46,8 @@ pub struct IfcInfo {
     pub location: Option<Point>,
     /// Whether an insulation covering is on it.
     pub insulated: bool,
+    /// A fitting's pressure loss factor, where recorded.
+    pub loss_coefficient: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

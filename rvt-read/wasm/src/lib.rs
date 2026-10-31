@@ -328,7 +328,7 @@ pub fn analyse_bytes(
             "breakout: each straight on a rated path over a room radiates through its walls (ASHRAE 1991, 0.8 mm galvanised steel) and a fibreglass tile ceiling (TM 5-805-4 table 7-1), from its midpoint",
             "ducts unlined, round where the IFC profile or the type name says so; a rectangular one insulated outside (an IFC covering) loses twice the bare figures (TM 5-805-4); transitions not modelled",
             "branches: power divides by the outlets' areas, the first duct below each, with ASHRAE's reflection below the main's cut-on; by flow where an outlet has no duct",
-            "regen of bends, tees and dampers by Woods' method; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
+            "regen of bends by CIBSE Guide B's detailed method where the IFC records a loss coefficient, else, with tees and dampers, by Woods' method; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
             "end reflection: diffusers flush with a hard ceiling (a tile ceiling would lose ~2 dB more at 63-125 Hz)",
             "dampers open; a VAV box is its damper, 15° closed",
             "silencers: length from the IFC, section from the duct, free area 0.5 and 100 mm splitters assumed",

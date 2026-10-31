@@ -35,7 +35,7 @@ use crate::physics::{
     end_reflection::{effective_diameter_rectangular, end_reflection_loss_db, Termination},
     branch::{branch_change_db, cut_on_hz, Outlets},
     plenum::{plenum_loss_db, Openings},
-    regenerative::{fitting_pwl_db, terminal_pwl_db},
+    regenerative::{cibse_fitting_pwl_db, fitting_pwl_db, terminal_pwl_db},
     room::receiver_spl,
     source::{source_pwl, SourceType},
     sub_bands,
@@ -103,13 +103,15 @@ pub enum BlockParams {
         wrapped: bool,
     },
     /// An elbow, `width_m` across in the plane of the bend; `lined` if it
-    /// and the ductwork either side are.
+    /// and the ductwork either side are. With its pressure loss factor
+    /// `zeta` known its regen is CIBSE's detailed method, else Woods'.
     Bend {
         width_m: f64,
         height_m: f64,
         kind: ElbowKind,
         lined: bool,
         round: bool,
+        zeta: Option<f64>,
     },
     /// A damper, `closed_deg` from fully open; a VAV box's is one.
     Damper {
@@ -201,6 +203,7 @@ pub enum Block {
         kind: ElbowKind,
         lined: bool,
         round: bool,
+        zeta: Option<f64>,
     },
     Damper {
         log_width: DualN,
@@ -258,12 +261,13 @@ impl Block {
                 round,
                 wrapped,
             },
-            BlockParams::Bend { width_m, height_m, kind, lined, round } => Self::Bend {
+            BlockParams::Bend { width_m, height_m, kind, lined, round, zeta } => Self::Bend {
                 log_width: v(width_m.ln(), 0),
                 log_height: v(height_m.ln(), 1),
                 kind,
                 lined,
                 round,
+                zeta,
             },
             BlockParams::Damper { width_m, height_m, closed_deg, round } => Self::Damper {
                 log_width: v(width_m.ln(), 0),
@@ -340,12 +344,16 @@ impl Block {
                 kind,
                 lined,
                 round,
+                zeta,
             } => {
                 let width = log_width.exp();
                 let height = log_height.exp();
                 let after_loss = sub_bands(pwl_in, &elbow_loss_db(width, *kind, *lined));
                 let area = section_area(width, height, *round);
-                let regen = fitting_pwl_db(DualN::constant(kind.regen_k_db()), q / area, area);
+                let regen = match zeta {
+                    Some(z) => cibse_fitting_pwl_db(*z, q / area, area, width, if *round || width.value >= height.value { width } else { height }),
+                    None => fitting_pwl_db(DualN::constant(kind.regen_k_db()), q / area, area),
+                };
                 db_add(&after_loss, &regen)
             }
             Self::Damper {
@@ -639,6 +647,7 @@ mod tests {
                     kind: ElbowKind::Mitred,
                     lined: false,
                     round: false,
+                    zeta: None,
                 },
                 BlockParams::Attenuator {
                     length_m: 1.0,

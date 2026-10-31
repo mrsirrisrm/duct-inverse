@@ -148,7 +148,12 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>
                         Some(ElementType::ElbowMitredVanes) => ElbowKind::Vaned,
                         _ => ElbowKind::Radiused,
                     };
-                    push(BlockParams::Bend { width_m: w, height_m: h, kind, lined: false, round }, node.family.clone());
+                    let zeta = node.ifc.as_ref().and_then(|i| i.loss_coefficient);
+                    let note = match zeta {
+                        Some(z) => format!("{}, ζ {z:.2}", node.family),
+                        None => node.family.clone(),
+                    };
+                    push(BlockParams::Bend { width_m: w, height_m: h, kind, lined: false, round, zeta }, note);
                 }
             }
             // Dampers as found, open; a VAV box's modulating, taken 15° closed.

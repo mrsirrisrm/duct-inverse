@@ -66,6 +66,9 @@ pub struct IfcElement {
     pub section: [Option<f64>; 3],
     /// Whether an insulation or wrapping covering is on it.
     pub insulated: bool,
+    /// Revit's "Loss Coefficient": a fitting's pressure loss in velocity
+    /// pressures.
+    pub loss_coefficient: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -609,6 +612,7 @@ impl<'a> File<'a> {
             (Some(Arg::Str(name @ ("Width" | "Height" | "Diameter"))), Some(Arg::Num(v))) => {
                 e.section[["Width", "Height", "Diameter"].iter().position(|n| n == name).unwrap()] = Some(length(*v));
             }
+            (Some(Arg::Str("Loss Coefficient")), Some(Arg::Num(v))) if *v > 0.0 => e.loss_coefficient = Some(*v),
             (Some(Arg::Str("System Name")), Some(Arg::Str(v))) => {
                 e.systems.extend(text(v).split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from))
             }
@@ -757,6 +761,7 @@ pub fn parse_with_spaces(bytes: &[u8]) -> (Vec<IfcElement>, Vec<IfcSpace>) {
             joined: Vec::new(),
             section: [None; 3],
             insulated: false,
+            loss_coefficient: None,
         });
     }
 
@@ -935,6 +940,7 @@ pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
             size,
             location,
             insulated: e.insulated,
+            loss_coefficient: e.loss_coefficient,
         });
     }
     for (k, e) in elements.iter().enumerate() {
@@ -1064,6 +1070,18 @@ mod tests {
             #5=IFCRELCOVERSBLDGELEMENTS('e',$,$,$,#1,(#3));\n#6=IFCRELCOVERSBLDGELEMENTS('f',$,$,$,#2,(#4));\nENDSEC;";
         let e = parse(src.as_bytes());
         assert!(e[0].insulated && !e[1].insulated);
+    }
+
+    /// A fitting's recorded loss coefficient is read; Revit's 0 for "not
+    /// calculated" is not.
+    #[test]
+    fn loss_coefficient() {
+        let src = "ISO-10303-21;\nDATA;\n#1=IFCDUCTFITTING('a',$,'Elbow:1',$,$,$,$,'1',.BEND.);\n#2=IFCDUCTFITTING('b',$,'Elbow:2',$,$,$,$,'2',.BEND.);\n\
+            #3=IFCPROPERTYSINGLEVALUE('Loss Coefficient',$,IFCREAL(1.23),$);\n#4=IFCPROPERTYSINGLEVALUE('Loss Coefficient',$,IFCREAL(0.),$);\n\
+            #5=IFCPROPERTYSET('p',$,'Mechanical',$,(#3));\n#6=IFCPROPERTYSET('q',$,'Mechanical',$,(#4));\n\
+            #7=IFCRELDEFINESBYPROPERTIES('r',$,$,$,(#1),#5);\n#8=IFCRELDEFINESBYPROPERTIES('s',$,$,$,(#2),#6);\nENDSEC;";
+        let e = parse(src.as_bytes());
+        assert_eq!((e[0].loss_coefficient, e[1].loss_coefficient), (Some(1.23), None));
     }
 
     /// A square's corners are equidistant from its centre too, but at √2

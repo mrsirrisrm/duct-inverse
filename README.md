@@ -30,7 +30,8 @@ npm run dev
   (`Dual<N>`). Its elements follow published methods (ASHRAE duct, elbow and
   end reflection losses, Reynolds & Bevirt lined duct, TM 5-805-4 lined
   elbows and attenuators, Wells' plenum, Schultz's room equation, Woods'
-  fitting regen, CIBSE diffuser noise); `cargo run --example reference` sets them beside their
+  fitting regen, CIBSE detailed regen for a bend of known loss factor, CIBSE
+  diffuser noise); `cargo run --example reference` sets them beside their
   references, and `cargo run --example tm_classroom` runs TM 5-805-4's worked
   supply path (§7-6) element by element, which `tests/tm_classroom.rs` holds
   the engine to.

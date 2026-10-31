@@ -78,6 +78,7 @@ pub fn params(diffuser_lw: Option<[f64; 8]>) -> Params {
         kind: ElbowKind::Vaned,
         lined: true,
         round: false,
+        zeta: None,
     };
     let branch = |flow_ratio: f64, w_in: f64, h_in: f64| BlockParams::Branch {
         flow_ratio,
