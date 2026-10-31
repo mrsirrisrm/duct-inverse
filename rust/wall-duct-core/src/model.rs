@@ -32,7 +32,7 @@ use crate::physics::{
     db_add,
     elbow::{elbow_loss_db, ElbowKind},
     duct_attenuation::segment_attenuation_db,
-    end_reflection::{effective_diameter_rectangular, end_reflection_loss_db},
+    end_reflection::{effective_diameter_rectangular, end_reflection_loss_db, Termination},
     regenerative::{fitting_pwl_db, terminal_pwl_db},
     room::receiver_spl,
     source::{source_pwl, SourceType},
@@ -121,10 +121,14 @@ pub enum BlockParams {
         free_area_ratio: f64,
         splitter_m: f64,
     },
+    /// A diffuser on a neck `width_m` x `height_m`: its own sound power
+    /// `lw_db` from its data, else estimated from its neck velocity.
     Diffuser {
         width_m: f64,
         height_m: f64,
         round: bool,
+        lw_db: Option<[f64; N_BANDS]>,
+        termination: Termination,
     },
     /// Branch division: the path continues with `flow_ratio` of the flow
     /// arriving, and carries that share of the sound power, plus the tee's
@@ -196,6 +200,8 @@ pub enum Block {
         log_width: DualN,
         log_height: DualN,
         round: bool,
+        lw_db: Option<[f64; N_BANDS]>,
+        termination: Termination,
     },
     Branch {
         log_flow_ratio: DualN,
@@ -247,10 +253,12 @@ impl Block {
                 free_area_raw: v(free_area_ratio, 1),
                 splitter_raw: v(splitter_m, 2),
             },
-            BlockParams::Diffuser { width_m, height_m, round } => Self::Diffuser {
+            BlockParams::Diffuser { width_m, height_m, round, lw_db, termination } => Self::Diffuser {
                 log_width: v(width_m.ln(), 0),
                 log_height: v(height_m.ln(), 1),
                 round,
+                lw_db,
+                termination,
             },
             BlockParams::Branch { flow_ratio, width_m, height_m, round } => Self::Branch {
                 log_flow_ratio: v(flow_ratio.ln(), 0),
@@ -325,13 +333,18 @@ impl Block {
                 log_width,
                 log_height,
                 round,
+                lw_db,
+                termination,
             } => {
                 let width = log_width.exp();
                 let height = log_height.exp();
                 let d_eff = if *round { width } else { effective_diameter_rectangular(width, height) };
-                let erl = end_reflection_loss_db(d_eff);
+                let erl = end_reflection_loss_db(d_eff, *termination);
                 let area = section_area(width, height, *round);
-                let regen = terminal_pwl_db(q / area, area);
+                let regen = match lw_db {
+                    Some(lw) => lw.map(DualN::constant),
+                    None => terminal_pwl_db(q / area, area),
+                };
                 let after_erl = sub_bands(pwl_in, &erl);
                 db_add(&after_erl, &regen)
             }
@@ -392,6 +405,8 @@ impl Params {
                     width_m: 0.4,
                     height_m: 0.3,
                     round: false,
+                    lw_db: None,
+                    termination: Termination::Flush,
                 },
             ],
         }
@@ -588,6 +603,8 @@ mod tests {
                     width_m: 0.35,
                     height_m: 0.25,
                     round: false,
+                    lw_db: None,
+                    termination: Termination::Flush,
                 },
             ],
         };
@@ -616,7 +633,7 @@ mod tests {
             receiver_distance_m: 2.0,
             blocks,
         };
-        let diffuser = BlockParams::Diffuser { width_m: 20.0, height_m: 20.0, round: false };
+        let diffuser = BlockParams::Diffuser { width_m: 20.0, height_m: 20.0, round: false, lw_db: None, termination: Termination::Flush };
         let whole = DuctSystem::from_params(&chain(vec![diffuser])).diffuser_pwl();
         let half = DuctSystem::from_params(&chain(vec![BlockParams::Branch { flow_ratio: 0.5, width_m: 20.0, height_m: 20.0, round: false }, diffuser]))
             .diffuser_pwl();

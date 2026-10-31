@@ -7,6 +7,7 @@ use duct_heal::classify::{classify_node, ElementType};
 use duct_heal::{Network, NodeKind};
 use wall_duct_core::model::BlockParams;
 use wall_duct_core::physics::elbow::ElbowKind;
+use wall_duct_core::physics::end_reflection::Termination;
 
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
@@ -109,7 +110,10 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64]) -> Vec<Mapped> {
             }
             NodeKind::Terminal => {
                 if let Some((w, h, round)) = section(net, path, i) {
-                    push(BlockParams::Diffuser { width_m: w, height_m: h, round }, format!("{}, neck from last duct", node.family));
+                    // Its ceiling is not in the model: flush, the smaller end
+                    // reflection, is the conservative choice.
+                    let block = BlockParams::Diffuser { width_m: w, height_m: h, round, lw_db: None, termination: Termination::Flush };
+                    push(block, format!("{}, neck from last duct", node.family));
                 }
             }
             // Takeoffs and tees are the Branch above; transitions and plenums

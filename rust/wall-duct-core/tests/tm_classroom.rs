@@ -54,18 +54,28 @@ fn room() {
     (0..7).for_each(|i| within(&format!("room, band {i}"), rel[i].value, REL_SPL_TM[i], 3.0));
 }
 
-/// The engine's room SPL from one diffuser, pinned. Where it differs from
-/// TM's (51 47 35 25 29 29 12): its end reflection is the flush form, TM's
-/// the tile ceiling's, ~2 dB less at 63 and 125 Hz; above 250 Hz it is the
-/// CIBSE diffuser estimate, 6 to 13 dB over TM's catalogue unit. Change it
-/// only for a change of method, with the reason.
+/// With TM's catalogue diffuser the engine's room SPL from one diffuser is
+/// within 3.5 dB of TM's in every band (51 47 35 25 29 29 12); 125 Hz is the
+/// farthest, the 24 x 60 run and Schultz's room each a dB or two from TM's.
+/// TM just meets NC 30 there; the engine rates 33. Pinned: change it only for
+/// a change of method, with the reason.
 #[test]
-fn full_path_is_pinned() {
-    let sys = DuctSystem::from_params(&params());
+fn full_path_with_catalogue_diffuser() {
+    let sys = DuctSystem::from_params(&params(Some(DIFFUSER_LW)));
     let spl = sys.receiver_spl_values();
-    let pinned = [54.1, 52.8, 38.0, 35.9, 34.6, 28.8, 22.8];
+    (0..7).for_each(|i| within(&format!("Lp vs TM, band {i}"), spl[i], LP_ONE_TM[i], 3.5));
+    let pinned = [51.2, 50.1, 34.6, 24.5, 28.3, 27.4, 10.5];
     (0..7).for_each(|i| within(&format!("Lp, band {i}"), spl[i], pinned[i], 0.1));
-    // The fan-borne bands stay within 6 dB of TM's.
-    (0..2).for_each(|i| within(&format!("Lp vs TM, band {i}"), spl[i], LP_ONE_TM[i], 6.0));
-    assert_eq!(sys.nc(), 37);
+    assert_eq!(sys.nc(), 33);
+}
+
+/// With the diffuser's sound estimated (CIBSE, pressure loss factor 4) it
+/// runs 1 to 12 dB over the catalogue unit from 250 Hz up. Pinned.
+#[test]
+fn full_path_with_estimated_diffuser() {
+    let sys = DuctSystem::from_params(&params(None));
+    let spl = sys.receiver_spl_values();
+    let pinned = [51.1, 50.1, 36.8, 35.9, 34.6, 28.8, 22.8];
+    (0..7).for_each(|i| within(&format!("Lp, band {i}"), spl[i], pinned[i], 0.1));
+    assert_eq!(sys.nc(), 34);
 }

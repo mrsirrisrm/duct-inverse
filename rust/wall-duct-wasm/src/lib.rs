@@ -19,6 +19,7 @@ use wall_duct_core::model::{
     SLOT_SOURCE_OFFSET, SYSTEM_SLOTS,
 };
 use wall_duct_core::physics::elbow::ElbowKind;
+use wall_duct_core::physics::end_reflection::Termination;
 use wall_duct_core::physics::source::SourceType;
 
 // ---- input shape ----
@@ -81,7 +82,9 @@ impl InputBlock {
             } => BlockParams::Attenuator {
                 length_m, width_m, height_m, free_area_ratio, splitter_m,
             },
-            Self::Diffuser { width_m, height_m } => BlockParams::Diffuser { width_m, height_m, round: false },
+            Self::Diffuser { width_m, height_m } => {
+                BlockParams::Diffuser { width_m, height_m, round: false, lw_db: None, termination: Termination::Flush }
+            }
         }
     }
 }

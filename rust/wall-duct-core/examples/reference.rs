@@ -9,7 +9,7 @@ use wall_duct_core::metrics::octave::{N_BANDS, OCTAVE_BANDS_HZ};
 use wall_duct_core::physics::{
     duct_attenuation::segment_attenuation_db,
     elbow::{elbow_loss_db, ElbowKind},
-    end_reflection::{effective_diameter_rectangular, end_reflection_loss_db},
+    end_reflection::{effective_diameter_rectangular, end_reflection_loss_db, Termination},
     room::receiver_spl,
 };
 
@@ -84,7 +84,7 @@ fn main() {
         let s = side / 1000.0;
         for (w, h) in [(s, s), (2.0 * s, s / 2.0)] {
             header(&format!("End reflection, {:.0} x {:.0} mm, dB", w * 1000.0, h * 1000.0));
-            let e = end_reflection_loss_db(effective_diameter_rectangular(c(w), c(h)));
+            let e = end_reflection_loss_db(effective_diameter_rectangular(c(w), c(h)), Termination::Flush);
             row("engine", |i| e[i].value);
             row("table (by sqrt area)", |i| table.get(i).copied().unwrap_or(f64::NAN));
         }

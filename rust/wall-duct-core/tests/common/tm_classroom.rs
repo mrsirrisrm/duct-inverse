@@ -8,6 +8,7 @@
 
 use wall_duct_core::model::{BlockParams, Params};
 use wall_duct_core::physics::elbow::ElbowKind;
+use wall_duct_core::physics::end_reflection::Termination;
 use wall_duct_core::physics::source::SourceType;
 
 pub const IN: f64 = 0.0254;
@@ -44,6 +45,10 @@ pub const TOTAL_IL_TM: [Option<f64>; 7] = [Some(44.0), Some(42.0), Some(53.0), N
 /// The diffuser's catalogue Lw (none given at 63 Hz).
 pub const DIFFUSER_LW_TM: [Option<f64>; 7] = [None, Some(43.0), Some(37.0), Some(35.0), Some(40.0), Some(40.0), Some(23.0)];
 
+/// The catalogue Lw as an engine spectrum: 63 Hz taken as 125's and 8 kHz
+/// as 4 kHz's, both well under the fan's there.
+pub const DIFFUSER_LW: [f64; 8] = [43.0, 43.0, 37.0, 35.0, 40.0, 40.0, 23.0, 23.0];
+
 /// Rel SPL at 8 ft in the 5760 ft³ room, from its room factor.
 pub const REL_SPL_TM: Bands7 = [-9.0, -11.0, -9.0, -10.0, -11.0, -11.0, -11.0];
 
@@ -54,10 +59,11 @@ pub const LP_FOUR_TM: Bands7 = [57.0, 53.0, 41.0, 31.0, 35.0, 35.0, 18.0];
 pub const ROOM_FT3: f64 = 5760.0;
 pub const RECEIVER_FT: f64 = 8.0;
 
-/// The path from the fan to one diffuser as engine blocks, in order. The
-/// fan's flow is six branches' 2000 cfm, so the take-off's flow ratio is
+/// The path from the fan to one diffuser as engine blocks, in order, the
+/// diffuser's Lw `diffuser_lw` (TM's is [`DIFFUSER_LW`]) or else estimated.
+/// The fan's flow is six branches' 2000 cfm, so the take-off's flow ratio is
 /// TM's area ratio.
-pub fn params() -> Params {
+pub fn params(diffuser_lw: Option<[f64; 8]>) -> Params {
     let lined = |l_ft: f64, w_in: f64, h_in: f64, round: bool| BlockParams::Segment {
         length_m: l_ft * FT,
         width_m: w_in * IN,
@@ -96,7 +102,13 @@ pub fn params() -> Params {
             elbow(16.0, 12.0),
             branch(BRANCH_RATIOS[2], 12.0, 16.0),
             lined(3.0, 10.0, 10.0, true),
-            BlockParams::Diffuser { width_m: 10.0 * IN, height_m: 10.0 * IN, round: true },
+            BlockParams::Diffuser {
+                width_m: 10.0 * IN,
+                height_m: 10.0 * IN,
+                round: true,
+                lw_db: diffuser_lw,
+                termination: Termination::Suspended,
+            },
         ],
     }
 }

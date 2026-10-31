@@ -14,7 +14,7 @@ use wall_duct_core::model::DuctSystem;
 use wall_duct_core::physics::{
     duct_attenuation::segment_attenuation_db,
     elbow::{elbow_loss_db, ElbowKind},
-    end_reflection::end_reflection_loss_db,
+    end_reflection::{end_reflection_loss_db, Termination},
     regenerative::terminal_pwl_db,
     room::receiver_spl,
     source::source_pwl,
@@ -62,9 +62,9 @@ fn main() {
     add(&|_| division);
 
     println!("end reflection, 10 in");
-    let erl = end_reflection_loss_db(c(10.0 * IN));
+    let erl = end_reflection_loss_db(c(10.0 * IN), Termination::Suspended);
     row("  TM part A (tile ceiling)", |i| ERL_TM[i]);
-    row("  engine (flush)", |i| erl[i].value);
+    row("  engine (suspended)", |i| erl[i].value);
     add(&|i| erl[i].value);
 
     println!("total insertion loss");
@@ -85,15 +85,17 @@ fn main() {
     println!("room Lp, one diffuser");
     row("  TM", |i| LP_ONE_TM[i]);
     row("  engine, fan less engine IL", |i| FAN_LW[i] - il[i] + rel[i].value);
-    let sys = DuctSystem::from_params(&params());
-    let spl = sys.receiver_spl_values();
-    println!("engine Lw after each block");
-    let (mut q, mut pwl) = (sys.volume_flow(), source_pwl(sys.source_type, sys.source_offset));
-    for (block, p) in sys.blocks.iter().zip(&sys.block_params) {
-        q = block.flow_out(q);
-        pwl = block.forward(&pwl, q);
-        row(&format!("  {}", p.type_name()), |i| pwl[i].value);
+    for (label, lw) in [("TM's catalogue diffuser", Some(DIFFUSER_LW)), ("CIBSE diffuser estimate", None)] {
+        let sys = DuctSystem::from_params(&params(lw));
+        println!("engine Lw after each block, {label}");
+        let (mut q, mut pwl) = (sys.volume_flow(), source_pwl(sys.source_type, sys.source_offset));
+        for (block, p) in sys.blocks.iter().zip(&sys.block_params) {
+            q = block.flow_out(q);
+            pwl = block.forward(&pwl, q);
+            row(&format!("  {}", p.type_name()), |i| pwl[i].value);
+        }
+        let spl = sys.receiver_spl_values();
+        row("  room Lp (with regen)", |i| spl[i]);
+        println!("  NC {} (TM: 30 from one diffuser)", sys.nc());
     }
-    row("  engine, full (with regen)", |i| spl[i]);
-    println!("NC: TM meets 30 from one diffuser; engine {}", sys.nc());
 }
