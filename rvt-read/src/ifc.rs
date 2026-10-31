@@ -15,6 +15,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::build::CFS;
+
+const FT: f64 = 0.3048;
 use crate::network::{EdgeSource, IfcInfo, Network, Node, NodeKind, Point};
 
 /// Duct-domain classes, IFC4 and their IFC2x3 equivalents' type names.
@@ -60,6 +62,8 @@ pub struct IfcElement {
     pub flow: Option<f64>,
     /// Elements (indices into `parse`'s result) a port of this one connects to.
     pub joined: Vec<usize>,
+    /// "Width", "Height" and "Diameter" properties, metres.
+    pub section: [Option<f64>; 3],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -293,11 +297,27 @@ struct File<'a> {
     flow_scale: f64,
 }
 
+/// An extruded solid as a duct: the extrusion its axis, and, should the
+/// profile be the duct's side (Revit's 2013 export draws a level duct as its
+/// plan, extruded by its height), the axis along the profile's longer side,
+/// mid-depth, with the section across it (`side_width`, `depth`).
+#[derive(Clone, Copy)]
+struct Extrusion {
+    start: Point,
+    end: Point,
+    width: f64,
+    height: f64,
+    round: bool,
+    side: (Point, Point),
+    side_width: f64,
+    depth: f64,
+}
+
 /// Points and extrusions of an element's body, in its placement's frame.
 #[derive(Default)]
 struct Body {
     points: Vec<Point>,
-    extrusions: Vec<(Point, Point, f64, f64, bool)>,
+    extrusions: Vec<Extrusion>,
 }
 
 impl<'a> File<'a> {
@@ -520,7 +540,21 @@ impl<'a> File<'a> {
                 let (Some(dir), Some(depth)) = (self.direction(a.get(2)), a.get(3).and_then(Arg::num)) else { return };
                 let run = mul(at.rotate(dir), depth * self.scale);
                 let start = at.apply([(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0, 0.0]);
-                body.extrusions.push((start, add(start, run), max[0] - min[0], max[1] - min[1], round));
+                let (w, h) = (max[0] - min[0], max[1] - min[1]);
+                let (c, mid) = ([(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0], mul(run, 0.5));
+                let (a, b, side_width) =
+                    if w >= h { ([min[0], c[1]], [max[0], c[1]], h) } else { ([c[0], min[1]], [c[0], max[1]], w) };
+                let side = (add(at.apply([a[0], a[1], 0.0]), mid), add(at.apply([b[0], b[1], 0.0]), mid));
+                body.extrusions.push(Extrusion {
+                    start,
+                    end: add(start, run),
+                    width: w,
+                    height: h,
+                    round,
+                    side,
+                    side_width,
+                    depth: depth * self.scale,
+                });
                 for corner in [[min[0], min[1]], [min[0], max[1]], [max[0], min[1]], [max[0], max[1]]] {
                     let p = at.apply([corner[0], corner[1], 0.0]);
                     body.points.extend([p, add(p, run)]);
@@ -567,7 +601,12 @@ impl<'a> File<'a> {
                 None
             }
         };
+        // A bare real is Revit's feet; a typed length the project's unit.
+        let length = |v: f64| v * if raw.contains("IFCREAL(") { FT } else { self.scale };
         match (a.first(), a.get(2)) {
+            (Some(Arg::Str(name @ ("Width" | "Height" | "Diameter"))), Some(Arg::Num(v))) => {
+                e.section[["Width", "Height", "Diameter"].iter().position(|n| n == name).unwrap()] = Some(length(*v));
+            }
             (Some(Arg::Str("System Name")), Some(Arg::Str(v))) => {
                 e.systems.extend(text(v).split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from))
             }
@@ -595,7 +634,6 @@ fn extent(points: &[Point]) -> Option<(Point, Point)> {
     }))
 }
 
-/// The duct-domain elements of an IFC file.
 /// A room: its name and its extent in world coordinates, metres.
 #[derive(Debug, Clone)]
 pub struct IfcSpace {
@@ -623,9 +661,12 @@ pub fn space_at(spaces: &[IfcSpace], p: Point) -> Option<usize> {
     (0..spaces.len()).filter(|&i| inside(&spaces[i])).min_by(|&a, &b| spaces[a].volume().total_cmp(&spaces[b].volume()))
 }
 
-/// Every space with a body, its extent in world coordinates.
+/// Every space with a body, its extent in world coordinates, in file order.
 fn spaces(file: &File) -> Vec<IfcSpace> {
-    file.of_class("IFCSPACE")
+    let mut found: Vec<_> = file.of_class("IFCSPACE").collect();
+    found.sort_by_key(|(id, _)| *id);
+    found
+        .into_iter()
         .filter_map(|(_, a)| {
             let place = file.placement(a.get(5).and_then(Arg::id));
             let body = file.body(a.get(6).and_then(Arg::id));
@@ -641,6 +682,7 @@ fn spaces(file: &File) -> Vec<IfcSpace> {
         .collect()
 }
 
+/// The duct-domain elements of an IFC file.
 pub fn parse(bytes: &[u8]) -> Vec<IfcElement> {
     parse_with_spaces(bytes).0
 }
@@ -671,6 +713,7 @@ pub fn parse_with_spaces(bytes: &[u8]) -> (Vec<IfcElement>, Vec<IfcSpace>) {
     ids.sort_unstable();
     let mut out = Vec::new();
     let mut index = HashMap::new();
+    let mut extrusions = HashMap::new();
     for id in ids {
         let (class, a) = file.get(id).expect("listed id");
         let ty = type_of.get(&id).and_then(|t| file.get(*t));
@@ -693,8 +736,9 @@ pub fn parse_with_spaces(bytes: &[u8]) -> (Vec<IfcElement>, Vec<IfcSpace>) {
         let place = file.placement(a.get(5).and_then(Arg::id));
         let body = file.body(a.get(6).and_then(Arg::id));
         let shape = match body.extrusions.first() {
-            Some(&(start, end, width, height, round)) if class == "IFCDUCTSEGMENT" && body.extrusions.len() == 1 => {
-                Some(Shape::Axis { start: place.apply(start), end: place.apply(end), width, height, round })
+            Some(x) if class == "IFCDUCTSEGMENT" && body.extrusions.len() == 1 => {
+                extrusions.insert(out.len(), (place, *x));
+                Some(Shape::Axis { start: place.apply(x.start), end: place.apply(x.end), width: x.width, height: x.height, round: x.round })
             }
             _ => extent(&body.points).map(|(min, max)| Shape::Box { frame: place, min, max }),
         };
@@ -709,6 +753,7 @@ pub fn parse_with_spaces(bytes: &[u8]) -> (Vec<IfcElement>, Vec<IfcSpace>) {
             systems: Vec::new(),
             flow: None,
             joined: Vec::new(),
+            section: [None; 3],
         });
     }
 
@@ -731,6 +776,21 @@ pub fn parse_with_spaces(bytes: &[u8]) -> (Vec<IfcElement>, Vec<IfcSpace>) {
             out[k].flow = Some(q);
         }
     }
+    // A duct's section from its properties, and its axis along its profile
+    // where the extrusion's depth is one of those dimensions, not its length.
+    for (k, (place, x)) in extrusions {
+        let close = |a: f64, b: f64| (a - b).abs() <= 0.05 * b.max(1e-3);
+        let section = match out[k].section {
+            [_, _, Some(d)] => Some((d, d, true)),
+            [Some(w), Some(h), _] => Some((w, h, false)),
+            _ => None,
+        };
+        let Some((w, h, round)) = section else { continue };
+        let fits = |a: f64, b: f64| (close(a, w) && close(b, h)) || (close(a, h) && close(b, w));
+        let (start, end) = if !fits(x.width, x.height) && fits(x.side_width, x.depth) { x.side } else { (x.start, x.end) };
+        out[k].shape = Some(Shape::Axis { start: place.apply(start), end: place.apply(end), width: w, height: h, round: round || x.round });
+    }
+
     // Membership of a system group, IFC's own record of what a "System Name" says.
     for (_, a) in file.of_class("IFCRELASSIGNSTOGROUP") {
         let Some(("IFCSYSTEM" | "IFCDISTRIBUTIONSYSTEM", g)) = a.get(6).and_then(Arg::id).and_then(|g| file.get(g)) else { continue };
@@ -954,6 +1014,28 @@ mod tests {
         assert_eq!(space_at(&spaces, [14.0, 3.0, 2.9]), Some(0));
         assert_eq!(space_at(&spaces, [16.0, 3.0, 2.9]), None);
         assert_eq!(space_at(&spaces, [14.0, 3.0, 4.5]), None);
+    }
+
+    /// Revit's 2013 export: a level 750 x 350 mm duct 8 m long drawn as its
+    /// plan, 8000 x 750, extruded up its 350 mm height, with its Width and
+    /// Height in feet. Its axis runs along the plan, its section the
+    /// properties'.
+    #[test]
+    fn duct_drawn_as_its_plan() {
+        let src = "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINT((0.,0.,0.));\n#2=IFCDIRECTION((1.,0.));\n#4=IFCDIRECTION((0.,0.,1.));\n\
+            #5=IFCSIUNIT(*,.LENGTHUNIT.,.MILLI.,.METRE.);\n#6=IFCUNITASSIGNMENT((#5));\n#7=IFCAXIS2PLACEMENT3D(#1,$,$);\n\
+            #8=IFCCARTESIANPOINT((0.,0.));\n#9=IFCAXIS2PLACEMENT2D(#8,#2);\n#10=IFCRECTANGLEPROFILEDEF(.AREA.,$,#9,8000.,750.);\n\
+            #11=IFCEXTRUDEDAREASOLID(#10,#7,#4,350.);\n#12=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#11));\n\
+            #13=IFCPRODUCTDEFINITIONSHAPE($,$,(#12));\n#14=IFCLOCALPLACEMENT($,#7);\n\
+            #20=IFCFLOWSEGMENT('g',$,'Rectangular Duct:Taps:9',$,$,#14,#13,'9');\n\
+            #21=IFCDUCTSEGMENTTYPE('t',$,'Taps',$,$,$,$,$,$,.RIGIDSEGMENT.);\n#22=IFCRELDEFINESBYTYPE('r',$,$,$,(#20),#21);\n\
+            #30=IFCPROPERTYSINGLEVALUE('Width',$,IFCREAL(2.46062992125984),$);\n#31=IFCPROPERTYSINGLEVALUE('Height',$,IFCREAL(1.14829396325459),$);\n\
+            #32=IFCPROPERTYSET('p',$,'Dimensions',$,(#30,#31));\n#33=IFCRELDEFINESBYPROPERTIES('d',$,$,$,(#20),#32);\nENDSEC;";
+        let e = &parse(src.as_bytes())[0];
+        let Some(Shape::Axis { start, end, width, height, round }) = e.shape else { panic!("no axis: {:?}", e.shape) };
+        let close = |a: Point, b: Point| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-6);
+        assert!(close(start, [-4.0, 0.0, 0.175]) && close(end, [4.0, 0.0, 0.175]), "{start:?} -> {end:?}");
+        assert!((width - 0.75).abs() < 1e-6 && (height - 0.35).abs() < 1e-6 && !round, "{width} x {height}");
     }
 
     /// A square's corners are equidistant from its centre too, but at √2
