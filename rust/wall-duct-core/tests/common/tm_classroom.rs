@@ -70,6 +70,7 @@ pub fn params(diffuser_lw: Option<[f64; 8]>) -> Params {
         height_m: h_in * IN,
         lining_m: IN,
         round,
+        wrapped: false,
     };
     let elbow = |w_in: f64, h_in: f64| BlockParams::Bend {
         width_m: w_in * IN,

@@ -93,12 +93,14 @@ fn section_area(width: DualN, height: DualN, round: bool) -> DualN {
 /// diameter `width_m`, with `height_m` the same.
 #[derive(Debug, Clone, Copy)]
 pub enum BlockParams {
+    /// A straight duct, `wrapped` if insulated outside.
     Segment {
         length_m: f64,
         width_m: f64,
         height_m: f64,
         lining_m: f64,
         round: bool,
+        wrapped: bool,
     },
     /// An elbow, `width_m` across in the plane of the bend; `lined` if it
     /// and the ductwork either side are.
@@ -191,6 +193,7 @@ pub enum Block {
         log_height: DualN,
         lining_raw: DualN,
         round: bool,
+        wrapped: bool,
     },
     Bend {
         log_width: DualN,
@@ -246,12 +249,14 @@ impl Block {
                 height_m,
                 lining_m,
                 round,
+                wrapped,
             } => Self::Segment {
                 log_length: v(length_m.ln(), 0),
                 log_width: v(width_m.ln(), 1),
                 log_height: v(height_m.ln(), 2),
                 lining_raw: v(lining_m, 3),
                 round,
+                wrapped,
             },
             BlockParams::Bend { width_m, height_m, kind, lined, round } => Self::Bend {
                 log_width: v(width_m.ln(), 0),
@@ -320,12 +325,13 @@ impl Block {
                 log_height,
                 lining_raw,
                 round,
+                wrapped,
             } => {
                 let length = log_length.exp();
                 let width = log_width.exp();
                 let height = log_height.exp();
                 let lining = lining_raw.max_f(0.0);
-                let loss = segment_attenuation_db(length, width, height, lining, *round);
+                let loss = segment_attenuation_db(length, width, height, lining, *round, *wrapped);
                 sub_bands(pwl_in, &loss)
             }
             Self::Bend {
@@ -433,6 +439,7 @@ impl Params {
                     height_m: 0.3,
                     lining_m: 0.025,
                     round: false,
+                    wrapped: false,
                 },
                 BlockParams::Attenuator {
                     length_m: 1.2,
@@ -624,6 +631,7 @@ mod tests {
                     height_m: 0.25,
                     lining_m: 0.025,
                     round: false,
+                    wrapped: false,
                 },
                 BlockParams::Bend {
                     width_m: 0.35,

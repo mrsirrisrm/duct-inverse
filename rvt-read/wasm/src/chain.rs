@@ -123,17 +123,18 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>
             );
         }
         let ty = classify_node(node);
+        let wrapped = node.ifc.as_ref().is_some_and(|i| i.insulated);
         match node.kind {
             NodeKind::Duct { start, end, width, height, round } => push(
-                BlockParams::Segment { length_m: dist(start, end), width_m: width, height_m: height, lining_m: 0.0, round },
-                "duct".into(),
+                BlockParams::Segment { length_m: dist(start, end), width_m: width, height_m: height, lining_m: 0.0, round, wrapped },
+                if wrapped { "duct, insulated".into() } else { "duct".into() },
             ),
             // Undecoded straights and flex: length from the elements either side.
             NodeKind::DuctNoGeometry | NodeKind::Undecoded => {
                 let ends = (net.nodes[prev].location, path.get(i + 1).and_then(|&m| net.nodes[m].location));
                 if let ((Some(a), Some(b)), Some((w, h, round))) = (ends, section(net, path, i)) {
                     push(
-                        BlockParams::Segment { length_m: dist(a, b).max(0.01), width_m: w, height_m: h, lining_m: 0.0, round },
+                        BlockParams::Segment { length_m: dist(a, b).max(0.01), width_m: w, height_m: h, lining_m: 0.0, round, wrapped },
                         "duct, length from neighbours".into(),
                     );
                 }

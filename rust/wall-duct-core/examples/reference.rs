@@ -68,7 +68,7 @@ fn main() {
     let c = D::constant;
     for (w, h) in [(0.3, 0.3), (0.6, 0.3), (0.6, 0.6), (1.2, 0.6)] {
         header(&format!("Unlined duct {w} x {h} m, dB/m"));
-        let e = segment_attenuation_db(c(1.0), c(w), c(h), c(0.0), false);
+        let e = segment_attenuation_db(c(1.0), c(w), c(h), c(0.0), false, false);
         row("engine", |i| e[i].value);
         row("ASHRAE 1991 equations", |i| ashrae_unlined(w, h, OCTAVE_BANDS_HZ[i]));
     }

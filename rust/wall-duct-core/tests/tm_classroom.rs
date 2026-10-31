@@ -25,7 +25,7 @@ fn within(what: &str, got: f64, tm: f64, tol: f64) {
 fn lined_runs() {
     let c = D::constant;
     for (name, l, w, h, round, tm) in LINED_RUNS.into_iter().filter(|r| !r.4) {
-        let loss = segment_attenuation_db(c(l * FT), c(w * IN), c(h * IN), c(IN), round);
+        let loss = segment_attenuation_db(c(l * FT), c(w * IN), c(h * IN), c(IN), round, false);
         let bands = if w * h > 1000.0 { 3 } else { 7 };
         (0..bands).for_each(|i| within(&format!("{name}, band {i}"), loss[i].value, tm[i], 4.0));
     }

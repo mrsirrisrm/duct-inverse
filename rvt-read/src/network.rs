@@ -44,6 +44,8 @@ pub struct IfcInfo {
     /// Centre of that extent in the IFC's world coordinates, which a Revit
     /// file's need not share.
     pub location: Option<Point>,
+    /// Whether an insulation covering is on it.
+    pub insulated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -74,7 +74,7 @@ impl InputBlock {
     fn into_params(self) -> BlockParams {
         match self {
             Self::Segment { length_m, width_m, height_m, lining_m } => {
-                BlockParams::Segment { length_m, width_m, height_m, lining_m, round: false }
+                BlockParams::Segment { length_m, width_m, height_m, lining_m, round: false, wrapped: false }
             }
             Self::Bend { width_m, height_m } => BlockParams::Bend { width_m, height_m, kind: ElbowKind::Mitred, lined: false, round: false },
             Self::Attenuator {

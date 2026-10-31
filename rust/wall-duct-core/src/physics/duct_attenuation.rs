@@ -8,6 +8,8 @@
 //!   inches, but never less than the unlined duct loses: at 63 Hz the lining
 //!   adds little to the walls' own loss. TM 5-805-4's worked example (§7-6)
 //!   is within ~3 dB for its 12 x 16 and 12 x 24 in runs.
+//! - **Wrapped**: a rectangular duct with external glass fibre insulation
+//!   loses twice the unlined figures (TM 5-805-4, table 7-2's note).
 //! - **Round** (ASHRAE's table for straight round duct, by diameter range):
 //!   0.01 to 0.1 dB/ft, the stiff wall losing far less than a flat one at
 //!   low frequency. A lined round duct is taken as unlined, short of its
@@ -58,11 +60,13 @@ pub fn rectangular_pa<const N: usize>(
     (width_m + height_m) * 2.0 / (width_m * height_m)
 }
 
-/// Per-metre attenuation of a rectangular duct at each of the 8 octave bands.
+/// Per-metre attenuation of a rectangular duct at each of the 8 octave
+/// bands, `wrapped` if insulated outside.
 pub fn attenuation_db_per_m<const N: usize>(
     width_m: Dual<N>,
     height_m: Dual<N>,
     lining_thickness_m: Dual<N>,
+    wrapped: bool,
 ) -> [Dual<N>; N_BANDS] {
     let pa = rectangular_pa(width_m, height_m) / FT_PER_M;
     // The fit is for linings of 1 to 2 in, and t^D is steep at 0: below
@@ -75,7 +79,7 @@ pub fn attenuation_db_per_m<const N: usize>(
         } else {
             pow(pa, RB_C[i]) * pow(t_in, RB_D[i]) * RB_B[i]
         };
-        let unlined = unlined_db_per_ft(pa, OCTAVE_BANDS_HZ[i]);
+        let unlined = unlined_db_per_ft(pa, OCTAVE_BANDS_HZ[i]) * if wrapped { 2.0 } else { 1.0 };
         (if lined.value > unlined.value { lined } else { unlined }) * FT_PER_M
     })
 }
@@ -88,18 +92,20 @@ pub fn round_db_per_m(diameter_m: f64) -> [f64; N_BANDS] {
 }
 
 /// Total attenuation of a duct segment of given length: rectangular
-/// `width_m` x `height_m`, or round of diameter `width_m`.
+/// `width_m` x `height_m`, or round of diameter `width_m`; `wrapped` if
+/// insulated outside, which the round duct's figures do not take.
 pub fn segment_attenuation_db<const N: usize>(
     length_m: Dual<N>,
     width_m: Dual<N>,
     height_m: Dual<N>,
     lining_thickness_m: Dual<N>,
     round: bool,
+    wrapped: bool,
 ) -> [Dual<N>; N_BANDS] {
     if round {
         return round_db_per_m(width_m.value).map(|per_m| length_m * per_m);
     }
-    attenuation_db_per_m(width_m, height_m, lining_thickness_m).map(|per_m| per_m * length_m)
+    attenuation_db_per_m(width_m, height_m, lining_thickness_m, wrapped).map(|per_m| per_m * length_m)
 }
 
 #[cfg(test)]
@@ -114,7 +120,7 @@ mod tests {
     #[test]
     fn lined_regime_matches_formula() {
         let c = Dual::<1>::constant;
-        let per_m = attenuation_db_per_m(c(12.0 * IN), c(16.0 * IN), c(IN));
+        let per_m = attenuation_db_per_m(c(12.0 * IN), c(16.0 * IN), c(IN), false);
         for i in 1..N_BANDS {
             let expected = RB_B[i] * 3.5f64.powf(RB_C[i]) * FT_PER_M;
             assert_relative_eq!(per_m[i].value, expected, max_relative = 1e-4);
@@ -127,7 +133,7 @@ mod tests {
     fn lined_never_below_unlined() {
         let c = Dual::<1>::constant;
         let (w, h) = (c(12.0 * IN), c(16.0 * IN));
-        let (lined, bare) = (attenuation_db_per_m(w, h, c(IN)), attenuation_db_per_m(w, h, c(0.0)));
+        let (lined, bare) = (attenuation_db_per_m(w, h, c(IN), false), attenuation_db_per_m(w, h, c(0.0), false));
         assert_eq!(lined[0].value, bare[0].value);
         assert!((0..N_BANDS).all(|i| lined[i].value >= bare[i].value));
     }
@@ -139,7 +145,7 @@ mod tests {
     fn unlined_regime_matches_ashrae() {
         let w = Dual::<1>::constant(0.6096);
         let t = Dual::<1>::constant(0.0);
-        let per_m = attenuation_db_per_m(w, w, t);
+        let per_m = attenuation_db_per_m(w, w, t, false);
         let expected = |i: usize| match i {
             0 => 1.64 * 2f64.powf(0.73) * 63f64.powf(-0.58),
             1 => 1.64 * 2f64.powf(0.73) * 125f64.powf(-0.58),
@@ -158,8 +164,8 @@ mod tests {
         let h = Dual::<1>::constant(0.3);
         let t1 = Dual::<1>::constant(0.025);
         let t2 = Dual::<1>::constant(0.050);
-        let a1 = attenuation_db_per_m(w, h, t1);
-        let a2 = attenuation_db_per_m(w, h, t2);
+        let a1 = attenuation_db_per_m(w, h, t1, false);
+        let a2 = attenuation_db_per_m(w, h, t2, false);
         // 500 Hz, 1 kHz should rise.
         assert!(a2[3].value > a1[3].value);
         assert!(a2[4].value > a1[4].value);
@@ -171,9 +177,24 @@ mod tests {
     fn round_duct_loses_little() {
         let c = Dual::<1>::constant;
         let d = c(10.0 * IN);
-        let round = segment_attenuation_db(c(1.0 / FT_PER_M), d, d, c(0.0), true);
-        let square = segment_attenuation_db(c(1.0 / FT_PER_M), d, d, c(0.0), false);
+        let round = segment_attenuation_db(c(1.0 / FT_PER_M), d, d, c(0.0), true, false);
+        let square = segment_attenuation_db(c(1.0 / FT_PER_M), d, d, c(0.0), false, false);
         assert_relative_eq!(round[0].value, 0.03, max_relative = 1e-9);
         assert!(square[0].value > 10.0 * round[0].value);
+    }
+
+    /// Wrapped outside, a bare rectangular duct loses twice as much, a lined
+    /// one where its lining loses less than that, a round one no more.
+    #[test]
+    fn external_wrap_doubles_the_bare_duct() {
+        let c = Dual::<1>::constant;
+        let (w, h) = (c(0.6), c(0.3));
+        let (bare, wrapped) = (attenuation_db_per_m(w, h, c(0.0), false), attenuation_db_per_m(w, h, c(0.0), true));
+        (0..N_BANDS).for_each(|i| assert_relative_eq!(wrapped[i].value, 2.0 * bare[i].value, max_relative = 1e-12));
+        let lined = attenuation_db_per_m(w, h, c(0.025), true);
+        assert!((0..N_BANDS).all(|i| lined[i].value >= wrapped[i].value));
+        let d = c(0.3);
+        let round = |wrap| segment_attenuation_db(c(1.0), d, d, c(0.0), true, wrap)[0].value;
+        assert_eq!(round(true), round(false));
     }
 }

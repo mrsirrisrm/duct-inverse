@@ -64,6 +64,8 @@ pub struct IfcElement {
     pub joined: Vec<usize>,
     /// "Width", "Height" and "Diameter" properties, metres.
     pub section: [Option<f64>; 3],
+    /// Whether an insulation or wrapping covering is on it.
+    pub insulated: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -754,6 +756,7 @@ pub fn parse_with_spaces(bytes: &[u8]) -> (Vec<IfcElement>, Vec<IfcSpace>) {
             flow: None,
             joined: Vec::new(),
             section: [None; 3],
+            insulated: false,
         });
     }
 
@@ -800,6 +803,15 @@ pub fn parse_with_spaces(bytes: &[u8]) -> (Vec<IfcElement>, Vec<IfcSpace>) {
             if !out[k].systems.contains(&name) {
                 out[k].systems.push(name.clone());
             }
+        }
+    }
+
+    // Insulation on the outside of an element, its coverings by relation.
+    for (_, a) in file.of_class("IFCRELCOVERSBLDGELEMENTS") {
+        let Some(&k) = a.get(4).and_then(Arg::id).and_then(|e| index.get(&e)) else { continue };
+        let wraps = |c: &u64| matches!(file.get(*c), Some(("IFCCOVERING", c)) if matches!(c.last(), Some(Arg::Enum("INSULATION" | "WRAPPING"))));
+        if a.get(5).map(Arg::list).unwrap_or(&[]).iter().filter_map(Arg::id).any(|c| wraps(&c)) {
+            out[k].insulated = true;
         }
     }
 
@@ -919,6 +931,7 @@ pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
             description: e.description.clone(),
             size,
             location,
+            insulated: e.insulated,
         });
     }
     for (k, e) in elements.iter().enumerate() {
@@ -1036,6 +1049,18 @@ mod tests {
         let close = |a: Point, b: Point| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-6);
         assert!(close(start, [-4.0, 0.0, 0.175]) && close(end, [4.0, 0.0, 0.175]), "{start:?} -> {end:?}");
         assert!((width - 0.75).abs() < 1e-6 && (height - 0.35).abs() < 1e-6 && !round, "{width} x {height}");
+    }
+
+    /// A duct with an insulation covering on it is insulated; one with a
+    /// cladding is not.
+    #[test]
+    fn insulation_covering() {
+        let src = "ISO-10303-21;\nDATA;\n#1=IFCDUCTSEGMENT('a',$,'Duct:1',$,$,$,$,'1',.RIGIDSEGMENT.);\n\
+            #2=IFCDUCTSEGMENT('b',$,'Duct:2',$,$,$,$,'2',.RIGIDSEGMENT.);\n\
+            #3=IFCCOVERING('c',$,'L50',$,$,$,$,$,.INSULATION.);\n#4=IFCCOVERING('d',$,'Clad',$,$,$,$,$,.CLADDING.);\n\
+            #5=IFCRELCOVERSBLDGELEMENTS('e',$,$,$,#1,(#3));\n#6=IFCRELCOVERSBLDGELEMENTS('f',$,$,$,#2,(#4));\nENDSEC;";
+        let e = parse(src.as_bytes());
+        assert!(e[0].insulated && !e[1].insulated);
     }
 
     /// A square's corners are equidistant from its centre too, but at √2

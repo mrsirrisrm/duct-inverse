@@ -291,7 +291,7 @@ pub fn analyse_bytes(
             if source.is_some() { "source: the unit's sound power as given" } else { "source: a forward-curved fan at the unit's flow and 250 Pa (no sound data given)" },
             "rooms from the IFC's spaces, their volume their extent's; a receiver at 1.2 m under each diffuser, every diffuser in the room reaching it by Schultz's equation (a normally furnished room) at its distance; the room rated at its worst receiver",
             "a terminal in no space: rated alone, in 50 m3 at 2 m",
-            "ducts unlined, round where the IFC profile or the type name says so; transitions not modelled",
+            "ducts unlined, round where the IFC profile or the type name says so; a rectangular one insulated outside (an IFC covering) loses twice the bare figures (TM 5-805-4); transitions not modelled",
             "branches: power divides by the outlets' areas, the first duct below each, with ASHRAE's reflection below the main's cut-on; by flow where an outlet has no duct",
             "regen of bends, tees and dampers by Woods' method; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
             "end reflection: diffusers flush with a hard ceiling (a tile ceiling would lose ~2 dB more at 63-125 Hz)",
