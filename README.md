@@ -39,6 +39,9 @@ npm run dev
 - `duct_poc/` — the original Python / PyTorch PoC, which the Rust core began
   as a port of. Its physics are the older placeholders.
 - `scripts/rebuild-wasm.sh` — rebuild wasm and refresh `wasm/`.
+- `scripts/fetch-samples.sh` — fetch the public sample models (NIBS Clinic,
+  Autodesk's rme_advanced and Snowdon Towers, Granlund's BIM4LCA housing) into
+  the gitignored `samples/`, checked against their hashes.
 
 ## Deploying to Vercel
 

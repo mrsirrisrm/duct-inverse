@@ -266,6 +266,7 @@ pub fn analyse_bytes(
             "system": cp.system,
             "terminal": { "id": net.nodes[terminal].id, "family": net.nodes[terminal].family },
             "terminals_rated": terminals_rated,
+            "terminals_in_spaces": terminals.iter().filter(|t| t.space.is_some()).count(),
             "elements": path.len(),
             "flow_l_s": q_unit * 1000.0,
             "bands_hz": OCTAVE_BANDS_HZ,
