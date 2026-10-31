@@ -5,6 +5,7 @@
 //! The report is JSON (see [`analyse`]); lengths in metres, flows in L/s.
 
 pub mod chain;
+pub mod rooms;
 
 use duct_heal::classify::{classify_node, ElementType};
 use duct_heal::{graph, heal, ifc, path, rvt_native, Network, NodeKind};
@@ -109,13 +110,16 @@ pub fn analyse_bytes(
     };
     let mut warnings = Vec::new();
     let mut recorded = connectivity(&net);
+    let mut spaces = Vec::new();
     let ifc = ifc_bytes.map(|b| {
-        let elements = ifc::parse(b);
+        let elements;
+        (elements, spaces) = ifc::parse_with_spaces(b);
         let parse_ms = lap();
         let m = ifc::merge(&mut net, &elements);
         json!({
             "parse_ms": parse_ms, "elements": m.elements, "matched": m.matched, "duct_geometry": m.geometry,
             "added": m.added, "ports": m.ports, "joined_inside": m.joined, "connectivity": connectivity(&net),
+            "spaces": spaces.len(),
         })
     });
     if !from_rvt {
@@ -141,22 +145,16 @@ pub fn analyse_bytes(
     }
     // No sound data in the model; without the unit's own, an estimate from its flow.
     let lw = source.unwrap_or_else(|| fan_estimate(q_unit));
-    let params = |mapped: &[chain::Mapped]| Params {
+    let params = |mapped: &[chain::Mapped], room_volume_m3: f64, receiver_distance_m: f64| Params {
         source_type: SourceType::Given(lw),
         source_offset_db: 0.0,
         volume_flow_m3s: q_unit,
-        room_volume_m3: 50.0,
-        receiver_distance_m: 2.0,
+        room_volume_m3,
+        receiver_distance_m,
         blocks: mapped.iter().map(|m| m.block).collect(),
     };
-    // The critical terminal is the loudest, not the farthest: each division
-    // on the way out takes power off. Rate every one the unit serves.
-    let rated = |path: &[usize]| {
-        let mapped = chain::chain(&net, path, &cp.flow);
-        let sys = (mapped.len() <= MAX_BLOCKS).then(|| DuctSystem::from_params(&params(&mapped)))?;
-        let loudest = sys.receiver_spl_values().into_iter().fold(f64::MIN, f64::max);
-        Some((sys.nc(), loudest, mapped))
-    };
+    // Every terminal the unit serves, its power into its room: each division
+    // on the way out takes power off, so the farthest is seldom the loudest.
     let candidates: Vec<_> = cp
         .tree
         .order
@@ -165,15 +163,45 @@ pub fn analyse_bytes(
         .filter_map(|&t| cp.tree.path_to(t).map(|p| (t, p)))
         .collect();
     let terminals_rated = candidates.len();
-    let Some((terminal, path, (_, _, mapped))) = candidates
+    let paths: Vec<_> = candidates
         .into_iter()
-        .filter_map(|(t, p)| rated(&p).map(|r| (t, p, r)))
-        .max_by(|(_, _, a), (_, _, b)| (a.0, a.1).partial_cmp(&(b.0, b.1)).unwrap())
-    else {
+        .filter_map(|(t, p)| {
+            let mapped = chain::chain(&net, &p, &cp.flow);
+            (mapped.len() <= MAX_BLOCKS).then_some((t, p, mapped))
+        })
+        .collect();
+    if paths.is_empty() {
         return Err(format!("every path from the unit maps to more than the engine's {MAX_BLOCKS} blocks"));
+    }
+    let terminals: Vec<rooms::Terminal> = paths
+        .iter()
+        .map(|(t, _, mapped)| {
+            let sys = DuctSystem::from_params(&params(mapped, rooms::DEFAULT_ROOM_M3, rooms::DEFAULT_RECEIVER_M));
+            let location = net.nodes[*t].ifc.as_ref().and_then(|i| i.location);
+            rooms::Terminal {
+                pwl: sys.diffuser_pwl().map(|b| b.value),
+                location,
+                space: location.and_then(|p| ifc::space_at(&spaces, p)),
+            }
+        })
+        .collect();
+    let rated = rooms::rate(&terminals, &spaces);
+    let room_json = |r: &rooms::RoomRating| {
+        let id = |k: usize| net.nodes[paths[k].0].id;
+        json!({
+            "space": r.space.map(|k| spaces[k].name.clone()),
+            "volume_m3": (r.volume_m3 * 10.0).round() / 10.0,
+            "terminals": r.terminals.len(),
+            "nc": r.nc,
+            "receiver_under": id(r.receiver_under),
+            "dominant": { "terminal": id(r.dominant), "distance_m": (r.dominant_distance_m * 100.0).round() / 100.0 },
+        })
     };
+    let room = &rated[0];
+    let (terminal, path, mapped) = &paths[room.dominant];
+    let terminal = *terminal;
     let path_ms = lap();
-    for &n in &path {
+    for &n in path {
         let node = &net.nodes[n];
         let ty = classify_node(node);
         match ty {
@@ -186,12 +214,12 @@ pub fn analyse_bytes(
             _ => {}
         }
     }
-    let sys = DuctSystem::from_params(&params(&mapped));
+    let sys = DuctSystem::from_params(&params(mapped, room.volume_m3, room.dominant_distance_m));
 
     let mut q = sys.volume_flow();
     let mut pwl = source_pwl(sys.source_type, sys.source_offset);
     let mut blocks = Vec::new();
-    for (k, (block, m)) in sys.blocks.iter().zip(&mapped).enumerate() {
+    for (k, (block, m)) in sys.blocks.iter().zip(mapped).enumerate() {
         q = block.flow_out(q);
         pwl = block.forward(&pwl, q);
         let velocity = match m.block {
@@ -215,8 +243,10 @@ pub fn analyse_bytes(
         }));
     }
 
+    // The room's worst receiver, from all its diffusers; the levers are the
+    // dominant one's, at its distance from that receiver.
     let spl = sys.receiver_spl();
-    let loudest = (0..N_BANDS).max_by(|&a, &b| spl[a].value.total_cmp(&spl[b].value)).unwrap();
+    let loudest = (0..N_BANDS).max_by(|&a, &b| room.spl[a].total_cmp(&room.spl[b])).unwrap();
     let mut grads: Vec<(usize, f64)> = spl[loudest].grad.iter().copied().enumerate().filter(|(_, g)| g.abs() > 1e-9).collect();
     grads.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
 
@@ -238,16 +268,19 @@ pub fn analyse_bytes(
             "bands_hz": OCTAVE_BANDS_HZ,
             "source_lw_db": bands(source_pwl::<1>(sys.source_type, wall_duct_core::autodiff::Dual::constant(0.0)).iter().map(|b| b.value)),
             "blocks": blocks,
-            "receiver_spl_db": bands(spl.iter().map(|b| b.value)),
-            "nc": sys.nc(),
+            "receiver_spl_db": bands(room.spl.iter().copied()),
+            "nc": room.nc,
+            "room": room_json(room),
             "sensitivities": {
                 "band_hz": OCTAVE_BANDS_HZ[loudest],
                 "top": grads.iter().take(8).map(|(slot, g)| json!({ "param": sys.slot_label(*slot), "db_per_unit": g })).collect::<Vec<_>>(),
             },
         },
+        "rooms": rated.iter().take(20).map(&room_json).collect::<Vec<_>>(),
         "assumptions": [
             if source.is_some() { "source: the unit's sound power as given" } else { "source: a forward-curved fan at the unit's flow and 250 Pa (no sound data given)" },
-            "room: 50 m3, receiver 2 m, Schultz's equation for a normally furnished room",
+            "rooms from the IFC's spaces, their volume their extent's; a receiver at 1.2 m under each diffuser, every diffuser in the room reaching it by Schultz's equation (a normally furnished room) at its distance; the room rated at its worst receiver",
+            "a terminal in no space: rated alone, in 50 m3 at 2 m",
             "ducts unlined, round where the IFC profile or the type name says so; a tee's loss is its power division; transitions not modelled",
             "regen of bends, tees and dampers by Woods' method; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
             "end reflection: diffusers flush with a hard ceiling (a tile ceiling would lose ~2 dB more at 63-125 Hz)",

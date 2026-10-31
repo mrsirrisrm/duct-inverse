@@ -42,12 +42,13 @@ worker.onmessage = ({ data }) => {
   out.innerHTML = `
     <p>Islands ${r.recorded.islands} → ${r.healed.islands}; terminals reaching a unit
       ${r.recorded.terminals_with_equipment} → ${r.healed.terminals_with_equipment} of ${r.healed.terminals}.
-      ${r.ifc ? `IFC: ${r.ifc.matched} elements matched, ${r.ifc.duct_geometry} ducts given geometry, ${r.ifc.added} added, ${r.ifc.ports} port joins, ${r.ifc.joined_inside} ends-inside joins.` : ''}</p>
+      ${r.ifc ? `IFC: ${r.ifc.matched} elements matched, ${r.ifc.duct_geometry} ducts given geometry, ${r.ifc.added} added, ${r.ifc.ports} port joins, ${r.ifc.joined_inside} ends-inside joins, ${r.ifc.spaces} spaces.` : ''}</p>
     <p>${p.unit.family} (${p.system}) → ${p.terminal.family}: ${p.elements} elements, ${p.blocks.length} blocks,
-      <b>NC ${p.nc}</b></p>
+      <b>NC ${p.nc}</b> in ${p.room.space ?? 'a stand-in room'} (${p.room.volume_m3} m³, ${p.room.terminals} diffuser${p.room.terminals > 1 ? 's' : ''})</p>
+    ${r.rooms.length > 1 ? `<p>Next: ${r.rooms.slice(1, 6).map(m => `${m.space ?? 'terminal ' + m.dominant.terminal} NC ${m.nc}`).join(', ')}</p>` : ''}
     <table><tr><th>#</th><th>block</th><th>L/s</th><th>m/s</th>${p.bands_hz.map(f => `<th>${f}</th>`).join('')}</tr>
       ${p.blocks.map(row).join('')}
-      <tr><td></td><td>receiver SPL</td><td></td><td></td>${p.receiver_spl_db.map(v => `<td>${v.toFixed(1)}</td>`).join('')}</tr>
+      <tr><td></td><td>receiver SPL, all the room's diffusers</td><td></td><td></td>${p.receiver_spl_db.map(v => `<td>${v.toFixed(1)}</td>`).join('')}</tr>
     </table>
     <pre>${[...r.warnings.map(w => 'warning: ' + w), ...r.assumptions.map(a => 'assumed: ' + a)].join('\n')}</pre>`;
 };
