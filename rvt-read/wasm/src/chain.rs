@@ -8,6 +8,11 @@ use duct_heal::{Network, NodeKind};
 use wall_duct_core::model::BlockParams;
 use wall_duct_core::physics::elbow::ElbowKind;
 use wall_duct_core::physics::end_reflection::Termination;
+use wall_duct_core::physics::plenum::Openings;
+
+/// A bare sheet-metal plenum's wall absorption: the model does not say how
+/// one is lined, and bare is the least loss.
+pub const PLENUM_ALPHA: f64 = 0.05;
 
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
@@ -32,6 +37,36 @@ fn section_toward(net: &Network, path: &[usize], i: usize, downstream: bool) -> 
 
 fn section(net: &Network, path: &[usize], i: usize) -> Option<Section> {
     section_toward(net, path, i, true)
+}
+
+fn area((w, h, round): Section) -> f64 {
+    if round { std::f64::consts::FRAC_PI_4 * w * w } else { w * h }
+}
+
+/// Where duct `n` meets an element at `centre`: its nearer end, and the
+/// direction along it toward that end.
+fn duct_end_toward(net: &Network, n: usize, centre: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+    let NodeKind::Duct { start, end, .. } = net.nodes[n].kind else { return None };
+    let (far, near) = if dist(start, centre) < dist(end, centre) { (end, start) } else { (start, end) };
+    let l = dist(far, near).max(1e-9);
+    Some((near, [(near[0] - far[0]) / l, (near[1] - far[1]) / l, (near[2] - far[2]) / l]))
+}
+
+/// A plenum's openings, from the sections either side and where those ducts
+/// end. Without both ends, the outlet is taken across the chamber's length,
+/// in line.
+fn plenum_openings(net: &Network, path: &[usize], i: usize, size: [f64; 3]) -> Option<Openings> {
+    let (inlet, outlet) = (section_toward(net, path, i, false)?, section_toward(net, path, i + 1, true)?);
+    let centre = net.nodes[path[i]].location?;
+    let ends = (duct_end_toward(net, path[i - 1], centre), path.get(i + 1).and_then(|&m| duct_end_toward(net, m, centre)));
+    let (distance_m, cos_theta) = match ends {
+        (Some((a, axis)), Some((b, _))) if dist(a, b) > 0.05 => {
+            let d = dist(a, b);
+            (d, ((b[0] - a[0]) * axis[0] + (b[1] - a[1]) * axis[1] + (b[2] - a[2]) * axis[2]) / d)
+        }
+        _ => (size[0].max(size[1]).max(size[2]), 1.0),
+    };
+    Some(Openings { inlet_m2: area(inlet), inlet_span_m: inlet.0.max(inlet.1), outlet_m2: area(outlet), distance_m, cos_theta })
 }
 
 /// A block and the element it came from, for the report.
@@ -108,6 +143,20 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64]) -> Vec<Mapped> {
                     );
                 }
             }
+            // A plenum with its extent from the IFC; a Revit one alone has none.
+            NodeKind::Fitting | NodeKind::Equipment if ty == Some(ElementType::Plenum) => {
+                let size = node.ifc.as_ref().and_then(|i| i.size);
+                if let Some(size) = size {
+                    if let Some(openings) = plenum_openings(net, path, i, size) {
+                        let mut s = size;
+                        s.sort_by(|a, b| b.total_cmp(a));
+                        push(
+                            BlockParams::Plenum { length_m: s[0], width_m: s[1], height_m: s[2], openings, alpha: [PLENUM_ALPHA; 8] },
+                            format!("{}, {:.2} m apart", node.family, openings.distance_m),
+                        );
+                    }
+                }
+            }
             NodeKind::Terminal => {
                 if let Some((w, h, round)) = section(net, path, i) {
                     // Its ceiling is not in the model: flush, the smaller end
@@ -116,8 +165,8 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64]) -> Vec<Mapped> {
                     push(block, format!("{}, neck from last duct", node.family));
                 }
             }
-            // Takeoffs and tees are the Branch above; transitions and plenums
-            // are not modelled yet (the report warns of plenums).
+            // Takeoffs and tees are the Branch above; transitions are not
+            // modelled yet.
             _ => {}
         }
     }

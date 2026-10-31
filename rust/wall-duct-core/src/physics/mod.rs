@@ -9,6 +9,7 @@ pub mod duct_attenuation;
 pub mod attenuator;
 pub mod elbow;
 pub mod end_reflection;
+pub mod plenum;
 pub mod regenerative;
 pub mod room;
 

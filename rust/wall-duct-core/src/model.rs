@@ -33,6 +33,7 @@ use crate::physics::{
     elbow::{elbow_loss_db, ElbowKind},
     duct_attenuation::segment_attenuation_db,
     end_reflection::{effective_diameter_rectangular, end_reflection_loss_db, Termination},
+    plenum::{plenum_loss_db, Openings},
     regenerative::{fitting_pwl_db, terminal_pwl_db},
     room::receiver_spl,
     source::{source_pwl, SourceType},
@@ -130,6 +131,14 @@ pub enum BlockParams {
         lw_db: Option<[f64; N_BANDS]>,
         termination: Termination,
     },
+    /// A plenum chamber, `alpha` its walls' absorption per band.
+    Plenum {
+        length_m: f64,
+        width_m: f64,
+        height_m: f64,
+        openings: Openings,
+        alpha: [f64; N_BANDS],
+    },
     /// Branch division: the path continues with `flow_ratio` of the flow
     /// arriving, and carries that share of the sound power, plus the tee's
     /// own noise at the speed in the main it leaves (`width_m` × `height_m`).
@@ -149,6 +158,7 @@ impl BlockParams {
             Self::Damper { .. } => "Damper",
             Self::Attenuator { .. } => "Attenuator",
             Self::Diffuser { .. } => "Diffuser",
+            Self::Plenum { .. } => "Plenum",
             Self::Branch { .. } => "Branch",
         }
     }
@@ -162,6 +172,7 @@ impl BlockParams {
             Self::Bend { .. } | Self::Damper { .. } => &["log_width", "log_height"],
             Self::Attenuator { .. } => &["length_raw", "free_area_raw", "splitter_raw"],
             Self::Diffuser { .. } => &["log_width", "log_height"],
+            Self::Plenum { .. } => &["log_length", "log_width", "log_height"],
             Self::Branch { .. } => &["log_flow_ratio"],
         }
     }
@@ -202,6 +213,13 @@ pub enum Block {
         round: bool,
         lw_db: Option<[f64; N_BANDS]>,
         termination: Termination,
+    },
+    Plenum {
+        log_length: DualN,
+        log_width: DualN,
+        log_height: DualN,
+        openings: Openings,
+        alpha: [f64; N_BANDS],
     },
     Branch {
         log_flow_ratio: DualN,
@@ -259,6 +277,13 @@ impl Block {
                 round,
                 lw_db,
                 termination,
+            },
+            BlockParams::Plenum { length_m, width_m, height_m, openings, alpha } => Self::Plenum {
+                log_length: v(length_m.ln(), 0),
+                log_width: v(width_m.ln(), 1),
+                log_height: v(height_m.ln(), 2),
+                openings,
+                alpha,
             },
             BlockParams::Branch { flow_ratio, width_m, height_m, round } => Self::Branch {
                 log_flow_ratio: v(flow_ratio.ln(), 0),
@@ -347,6 +372,9 @@ impl Block {
                 };
                 let after_erl = sub_bands(pwl_in, &erl);
                 db_add(&after_erl, &regen)
+            }
+            Self::Plenum { log_length, log_width, log_height, openings, alpha } => {
+                sub_bands(pwl_in, &plenum_loss_db(log_length.exp(), log_width.exp(), log_height.exp(), openings, alpha))
             }
             Self::Branch { log_flow_ratio, main_area_m2 } => {
                 // Power divides in proportion to flow: 10 log10(ratio), as

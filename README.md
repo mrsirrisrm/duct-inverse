@@ -29,8 +29,8 @@ npm run dev
 - `rust/wall-duct-core/` — pure Rust physics + forward-mode autodiff
   (`Dual<N>`). Its elements follow published methods (ASHRAE duct, elbow and
   end reflection losses, Reynolds & Bevirt lined duct, TM 5-805-4 lined
-  elbows and attenuators, Schultz's room equation, Woods' fitting regen, CIBSE
-  diffuser noise); `cargo run --example reference` sets them beside their
+  elbows and attenuators, Wells' plenum, Schultz's room equation, Woods'
+  fitting regen, CIBSE diffuser noise); `cargo run --example reference` sets them beside their
   references, and `cargo run --example tm_classroom` runs TM 5-805-4's worked
   supply path (§7-6) element by element, which `tests/tm_classroom.rs` holds
   the engine to.

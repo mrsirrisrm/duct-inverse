@@ -202,6 +202,9 @@ fn describe_block(idx: usize, bp: &BlockParams, q_m3s: f64) -> BlockSummary {
         BlockParams::Branch { flow_ratio, .. } => {
             format!("Branch, {:.0}% of flow continues", flow_ratio * 100.0)
         }
+        BlockParams::Plenum { length_m, width_m, height_m, .. } => {
+            format!("Plenum {}×{}×{} mm", mm(length_m), mm(width_m), mm(height_m))
+        }
     };
     BlockSummary {
         index: idx,

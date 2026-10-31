@@ -205,9 +205,12 @@ pub fn analyse_bytes(
         let node = &net.nodes[n];
         let ty = classify_node(node);
         match ty {
-            Some(ElementType::Plenum) => {
-                warnings.push(format!("{} {} ({}) is on the path but not modelled", ty.unwrap().label(), node.id, node.family))
-            }
+            Some(ElementType::Plenum) if !mapped.iter().any(|m| m.element == node.id) => warnings.push(format!(
+                "{} {} ({}) is on the path but not modelled: it needs its extent from an IFC",
+                ty.unwrap().label(),
+                node.id,
+                node.family
+            )),
             None if node.kind == NodeKind::Fitting => {
                 warnings.push(format!("fitting {} ({} | {}) is unclassified and passed through", node.id, node.family, node.type_name))
             }
@@ -286,6 +289,7 @@ pub fn analyse_bytes(
             "end reflection: diffusers flush with a hard ceiling (a tile ceiling would lose ~2 dB more at 63-125 Hz)",
             "dampers open; a VAV box is its damper, 15° closed",
             "silencers: length from the IFC, section from the duct, free area 0.5 and 100 mm splitters assumed",
+            "plenums: Wells' method, their extent from the IFC, openings the ducts either side; walls bare sheet metal (absorption 0.05), the least loss; at most 20 dB below the inlet's cut-on",
             "element types from family-name rules; names they leave are listed under classified",
         ],
         "warnings": warnings,

@@ -1,12 +1,13 @@
 //! An IFC on its own, end to end: a unit's supply through three ducts to two
-//! diffusers, with and without the room they share.
+//! diffusers, with and without the room they share, and through a plenum.
 
 use serde_json::Value;
 
 /// STEP for the unit, ducts and diffusers (millimetres, joined port to port,
 /// one supply system), with the office (8 x 4 x 2.7 m) around both
-/// diffusers if `office`.
-fn model(office: bool) -> String {
+/// diffusers if `office`, and a 1.5 x 1 x 1 m plenum between the unit and
+/// the first duct, through a duct of its own, if `plenum`.
+fn model(office: bool, plenum: bool) -> String {
     let mut s = String::from(
         "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINT((0.,0.,0.));\n#4=IFCDIRECTION((0.,0.,1.));\n\
          #5=IFCSIUNIT(*,.LENGTHUNIT.,.MILLI.,.METRE.);\n#6=IFCUNITASSIGNMENT((#5));\n#7=IFCAXIS2PLACEMENT3D(#1,$,$);\n",
@@ -39,10 +40,15 @@ fn model(office: bool) -> String {
     for (n, x) in [(340, 2000.0), (350, 6000.0)] {
         element(&mut s, &format!("#{n}=IFCAIRTERMINAL('t{n}',$,'Supply Diffuser:600 x 600:{n}',$,$,PLACE,SHAPE,'{n}',$);\n"), [x, 2000.0, 2700.0], diffuser, 50.0);
     }
+    if plenum {
+        element(&mut s, "#303=IFCDUCTSEGMENT('d303',$,'Rectangular Duct:Supply:303',$,$,PLACE,SHAPE,'303',$);\n", [0.0, -2000.0, 3000.0], duct, 1000.0);
+        element(&mut s, "#305=IFCDUCTFITTING('p305',$,'Supply Plenum:1500 x 1000:305',$,$,PLACE,SHAPE,'305',$);\n", [0.0, 0.0, 3000.0], [(-750.0, -500.0), (750.0, 500.0)], 1000.0);
+    }
     if office {
         element(&mut s, "#360=IFCSPACE('o',$,'1.01',$,$,PLACE,SHAPE,'Office',.ELEMENT.,.INTERNAL.,$);\n", [0.0, 0.0, 0.0], [(0.0, 0.0), (8000.0, 4000.0)], 2700.0);
     }
-    for (a, b) in [(300, 310), (310, 320), (310, 330), (320, 340), (330, 350)] {
+    let feed: &[(u32, u32)] = if plenum { &[(300, 303), (303, 305), (305, 310)] } else { &[(300, 310)] };
+    for &(a, b) in feed.iter().chain(&[(310, 320), (310, 330), (320, 340), (330, 350)]) {
         let (pa, pb, ra, rb, c) = (id(), id(), id(), id(), id());
         s.push_str(&format!(
             "#{pa}=IFCDISTRIBUTIONPORT('p{pa}',$,$,$,$,$,$,.SOURCE.);\n#{pb}=IFCDISTRIBUTIONPORT('p{pb}',$,$,$,$,$,$,.SINK.);\n\
@@ -55,14 +61,37 @@ fn model(office: bool) -> String {
         "#500=IFCPROPERTYSINGLEVALUE('Flow',$,IFCREAL(7.),$);\n#501=IFCPROPERTYSET('f',$,'Mechanical',$,(#500));\n\
          #502=IFCRELDEFINESBYPROPERTIES('g',$,$,$,(#340,#350),#501);\n\
          #510=IFCDISTRIBUTIONSYSTEM('s',$,'Supply Air',$,$,$);\n\
-         #511=IFCRELASSIGNSTOGROUP('a',$,$,$,(#300,#310,#320,#330,#340,#350),$,#510);\nENDSEC;",
+         #511=IFCRELASSIGNSTOGROUP('a',$,$,$,(#300,#303,#305,#310,#320,#330,#340,#350),$,#510);\nENDSEC;",
     );
     s
 }
 
-fn analyse(office: bool) -> Value {
+fn analyse_model(office: bool, plenum: bool) -> Value {
     let control = rvt::control::WalkerControl::new();
-    duct_pipeline::analyse_bytes(None, Some(model(office).as_bytes()), None, &control).expect("analyse")
+    duct_pipeline::analyse_bytes(None, Some(model(office, plenum).as_bytes()), None, &control).expect("analyse")
+}
+
+fn analyse(office: bool) -> Value {
+    analyse_model(office, false)
+}
+
+/// The plenum is a Plenum block, not a warning. Its openings are the
+/// 400 x 300 ducts, 4 m apart across it with no direct line (cos θ 0), so
+/// it loses only its reverberant share: S = 8 − 0.24 m², R = (7.76 · 0.05 +
+/// 0.24) / 0.95, −10 lg(0.12 / R) = 7.4 dB in every band.
+#[test]
+fn plenum_on_the_path() {
+    let report = analyse_model(false, true);
+    let blocks = report["path"]["blocks"].as_array().unwrap();
+    let k = blocks.iter().position(|b| b["type"] == "Plenum").expect("a Plenum block");
+    let lw = |b: &Value| b["lw_db"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
+    let r: f64 = (7.76 * 0.05 + 0.24) / 0.95;
+    let expected = -10.0 * (0.12 / r).log10();
+    for (before, after) in lw(&blocks[k - 1]).iter().zip(lw(&blocks[k])) {
+        assert!((before - after - expected).abs() < 0.15, "{before} -> {after}, expected {expected:.1} dB");
+    }
+    let warnings = report["warnings"].as_array().unwrap();
+    assert!(!warnings.iter().any(|w| w.as_str().unwrap().contains("not modelled")), "{warnings:?}");
 }
 
 #[test]
