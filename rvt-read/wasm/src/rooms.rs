@@ -2,8 +2,9 @@
 //!
 //! A receiver sits at ear height under each diffuser in a room. Every
 //! diffuser in the room reaches it by Schultz's equation at its own distance,
-//! and the powers add; the room is rated at its worst receiver. A terminal no
-//! room holds is rated alone, in a stand-in room.
+//! as does every duct run breaking out through its ceiling, and the powers
+//! add; the room is rated at its worst receiver. A terminal no room holds is
+//! rated alone, in a stand-in room.
 
 use duct_heal::ifc::IfcSpace;
 use duct_heal::network::Point;
@@ -25,6 +26,14 @@ pub struct Terminal {
     pub space: Option<usize>,
 }
 
+/// Sound power into a room from somewhere other than a diffuser: a duct
+/// run's breakout through the ceiling.
+pub struct Source {
+    pub pwl: [f64; N_BANDS],
+    pub location: Point,
+    pub space: usize,
+}
+
 pub struct RoomRating {
     /// The space, or `None` for a terminal rated alone.
     pub space: Option<usize>,
@@ -38,6 +47,10 @@ pub struct RoomRating {
     pub dominant_distance_m: f64,
     pub spl: [f64; N_BANDS],
     pub nc: i32,
+    /// Breakout runs over the room, and their share of the worst receiver's
+    /// energy.
+    pub breakout_runs: usize,
+    pub breakout_share: f64,
 }
 
 fn dist(a: Point, b: Point) -> f64 {
@@ -53,9 +66,9 @@ fn energy(spl: &[f64; N_BANDS]) -> f64 {
     spl.iter().map(|l| 10f64.powf(l / 10.0)).sum()
 }
 
-/// Rate every room `terminals` are in, and every terminal no room holds,
-/// worst first (by NC, then loudest band).
-pub fn rate(terminals: &[Terminal], spaces: &[IfcSpace]) -> Vec<RoomRating> {
+/// Rate every room `terminals` are in, with the `sources` over it, and every
+/// terminal no room holds, worst first (by NC, then loudest band).
+pub fn rate(terminals: &[Terminal], sources: &[Source], spaces: &[IfcSpace]) -> Vec<RoomRating> {
     let mut rooms: Vec<(Option<usize>, Vec<usize>)> = Vec::new();
     for (i, t) in terminals.iter().enumerate() {
         match (t.space, t.location) {
@@ -81,11 +94,14 @@ pub fn rate(terminals: &[Terminal], spaces: &[IfcSpace]) -> Vec<RoomRating> {
                     dominant_distance_m: DEFAULT_RECEIVER_M,
                     spl,
                     nc: nc_exact(&spl),
+                    breakout_runs: 0,
+                    breakout_share: 0.0,
                 }
             }
             Some(s) => {
                 let room = &spaces[s];
                 let volume = room.volume();
+                let over: Vec<&Source> = sources.iter().filter(|b| b.space == s).collect();
                 let worst = members
                     .iter()
                     .map(|&r| {
@@ -98,16 +114,30 @@ pub fn rate(terminals: &[Terminal], spaces: &[IfcSpace]) -> Vec<RoomRating> {
                                 (j, at, at_receiver(&terminals[j].pwl, volume, at))
                             })
                             .collect();
+                        let breakout: Vec<[f64; N_BANDS]> = over.iter().map(|b| at_receiver(&b.pwl, volume, dist(b.location, ear))).collect();
                         let spl: [f64; N_BANDS] = std::array::from_fn(|b| {
-                            10.0 * parts.iter().map(|p| 10f64.powf(p.2[b] / 10.0)).sum::<f64>().log10()
+                            let e = |l: f64| 10f64.powf(l / 10.0);
+                            10.0 * (parts.iter().map(|p| e(p.2[b])).sum::<f64>() + breakout.iter().map(|x| e(x[b])).sum::<f64>()).log10()
                         });
                         let (dominant, at, _) = *parts.iter().max_by(|a, b| energy(&a.2).total_cmp(&energy(&b.2))).unwrap();
-                        (r, dominant, at, spl)
+                        let share = breakout.iter().map(energy).sum::<f64>() / energy(&spl);
+                        (r, dominant, at, spl, share)
                     })
                     .max_by(|a, b| (nc_exact(&a.3), energy(&a.3)).partial_cmp(&(nc_exact(&b.3), energy(&b.3))).unwrap())
                     .unwrap();
-                let (receiver_under, dominant, dominant_distance_m, spl) = worst;
-                RoomRating { space, terminals: members, volume_m3: volume, receiver_under, dominant, dominant_distance_m, spl, nc: nc_exact(&spl) }
+                let (receiver_under, dominant, dominant_distance_m, spl, breakout_share) = worst;
+                RoomRating {
+                    space,
+                    terminals: members,
+                    volume_m3: volume,
+                    receiver_under,
+                    dominant,
+                    dominant_distance_m,
+                    spl,
+                    nc: nc_exact(&spl),
+                    breakout_runs: over.len(),
+                    breakout_share,
+                }
             }
         })
         .collect();
@@ -132,7 +162,7 @@ mod tests {
     fn equal_diffusers_add() {
         let at = |n: usize| {
             let t: Vec<Terminal> = (0..n).map(|_| Terminal { pwl: PWL, location: Some([5.0, 3.0, 2.7]), space: Some(0) }).collect();
-            rate(&t, &[room()]).remove(0)
+            rate(&t, &[], &[room()]).remove(0)
         };
         let (one, two) = (at(1), at(2));
         assert_eq!(two.terminals.len(), 2);
@@ -153,9 +183,9 @@ mod tests {
             Terminal { pwl: PWL, location: Some([1.0, 3.0, 2.7]), space: Some(0) },
             Terminal { pwl: loud, location: Some([9.0, 3.0, 2.7]), space: Some(0) },
         ];
-        let r = rate(&t, &[room()]).remove(0);
+        let r = rate(&t, &[], &[room()]).remove(0);
         assert_eq!((r.receiver_under, r.dominant), (1, 1));
-        let alone = rate(&t[1..], &[room()]).remove(0);
+        let alone = rate(&t[1..], &[], &[room()]).remove(0);
         let gain = r.spl[0] - alone.spl[0];
         assert!(gain > 0.0 && gain < 1.0, "the far quiet diffuser adds {gain} dB");
     }
@@ -168,9 +198,23 @@ mod tests {
             Terminal { pwl: PWL, location: None, space: None },
             Terminal { pwl: PWL.map(|l| l + 20.0), location: None, space: None },
         ];
-        let rated = rate(&t, &[]);
+        let rated = rate(&t, &[], &[]);
         assert_eq!(rated.len(), 2);
         assert_eq!((rated[0].terminals[0], rated[0].volume_m3, rated[0].dominant_distance_m), (1, DEFAULT_ROOM_M3, DEFAULT_RECEIVER_M));
         assert!(rated[0].nc >= rated[1].nc);
+    }
+
+    /// A run over the room adds at every receiver by its distance, and its
+    /// share is reported; one over another room does not.
+    #[test]
+    fn breakout_adds() {
+        let t = [Terminal { pwl: PWL, location: Some([5.0, 3.0, 2.7]), space: Some(0) }];
+        let alone = rate(&t, &[], &[room()]).remove(0);
+        let run = Source { pwl: PWL, location: [5.0, 3.0, 2.7], space: 0 };
+        let elsewhere = Source { pwl: PWL, location: [5.0, 3.0, 2.7], space: 1 };
+        let both = rate(&t, &[run, elsewhere], &[room()]).remove(0);
+        assert_eq!(both.breakout_runs, 1);
+        assert!((both.breakout_share - 0.5).abs() < 1e-9);
+        (0..N_BANDS).for_each(|b| assert!((both.spl[b] - alone.spl[b] - 10.0 * 2f64.log10()).abs() < 1e-9));
     }
 }

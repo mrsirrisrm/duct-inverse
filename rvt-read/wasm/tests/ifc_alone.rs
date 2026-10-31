@@ -1,13 +1,16 @@
 //! An IFC on its own, end to end: a unit's supply through three ducts to two
-//! diffusers, with and without the room they share, and through a plenum.
+//! diffusers, with and without the room they share, through a plenum, and
+//! breaking out into the room.
 
 use serde_json::Value;
 
 /// STEP for the unit, ducts and diffusers (millimetres, joined port to port,
 /// one supply system), with the office (8 x 4 x 2.7 m) around both
 /// diffusers if `office`, and a 1.5 x 1 x 1 m plenum between the unit and
-/// the first duct, through a duct of its own, if `plenum`.
-fn model(office: bool, plenum: bool) -> String {
+/// the first duct, through a duct of its own, if `plenum`. The three ducts to
+/// the diffusers run 3 to 4 m up, in the office's ceiling void, if `void`;
+/// else 5 to 6 m, above it.
+fn model(office: bool, plenum: bool, void: bool) -> String {
     let mut s = String::from(
         "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINT((0.,0.,0.));\n#4=IFCDIRECTION((0.,0.,1.));\n\
          #5=IFCSIUNIT(*,.LENGTHUNIT.,.MILLI.,.METRE.);\n#6=IFCUNITASSIGNMENT((#5));\n#7=IFCAXIS2PLACEMENT3D(#1,$,$);\n",
@@ -34,8 +37,9 @@ fn model(office: bool, plenum: bool) -> String {
     let duct = [(-200.0, -150.0), (200.0, 150.0)];
     let diffuser = [(-300.0, -300.0), (300.0, 300.0)];
     element(&mut s, "#300=IFCUNITARYEQUIPMENT('u',$,'AHU:AHU:300',$,$,PLACE,SHAPE,'300',$);\n", [0.0, 0.0, 4000.0], [(-500.0, -500.0), (500.0, 500.0)], 1000.0);
+    let duct_z = if void { 3000.0 } else { 5000.0 };
     for (n, x) in [(310, 0.0), (320, 2000.0), (330, 6000.0)] {
-        element(&mut s, &format!("#{n}=IFCDUCTSEGMENT('d{n}',$,'Rectangular Duct:Supply:{n}',$,$,PLACE,SHAPE,'{n}',$);\n"), [x, 2000.0, 3000.0], duct, 1000.0);
+        element(&mut s, &format!("#{n}=IFCDUCTSEGMENT('d{n}',$,'Rectangular Duct:Supply:{n}',$,$,PLACE,SHAPE,'{n}',$);\n"), [x, 2000.0, duct_z], duct, 1000.0);
     }
     for (n, x) in [(340, 2000.0), (350, 6000.0)] {
         element(&mut s, &format!("#{n}=IFCAIRTERMINAL('t{n}',$,'Supply Diffuser:600 x 600:{n}',$,$,PLACE,SHAPE,'{n}',$);\n"), [x, 2000.0, 2700.0], diffuser, 50.0);
@@ -66,13 +70,13 @@ fn model(office: bool, plenum: bool) -> String {
     s
 }
 
-fn analyse_model(office: bool, plenum: bool) -> Value {
+fn analyse_model(office: bool, plenum: bool, void: bool) -> Value {
     let control = rvt::control::WalkerControl::new();
-    duct_pipeline::analyse_bytes(None, Some(model(office, plenum).as_bytes()), None, &control).expect("analyse")
+    duct_pipeline::analyse_bytes(None, Some(model(office, plenum, void).as_bytes()), None, &control).expect("analyse")
 }
 
 fn analyse(office: bool) -> Value {
-    analyse_model(office, false)
+    analyse_model(office, false, false)
 }
 
 /// The plenum is a Plenum block, not a warning. Its openings are the
@@ -81,7 +85,7 @@ fn analyse(office: bool) -> Value {
 /// 0.24) / 0.95, −10 lg(0.12 / R) = 7.4 dB in every band.
 #[test]
 fn plenum_on_the_path() {
-    let report = analyse_model(false, true);
+    let report = analyse_model(false, true, false);
     let blocks = report["path"]["blocks"].as_array().unwrap();
     let k = blocks.iter().position(|b| b["type"] == "Plenum").expect("a Plenum block");
     let lw = |b: &Value| b["lw_db"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
@@ -145,4 +149,19 @@ fn branch_by_area_with_reflection() {
         let expected = 10.0 * 2f64.log10() + if i < 3 { -10.0 * (8.0f64 / 9.0).log10() } else { 0.0 };
         assert!((before - after - expected).abs() < 0.15, "band {i}: {before} -> {after}, expected {expected:.2} dB");
     }
+}
+
+/// With the ducts in the office's ceiling void, their breakout through the
+/// ceiling adds to its receivers: all three runs are counted, and the room
+/// is louder than with them above it, in every band, by their share.
+#[test]
+fn breakout_into_the_room() {
+    let (above, over) = (analyse_model(true, false, false), analyse_model(true, false, true));
+    let room = &over["path"]["room"];
+    assert_eq!(room["breakout"]["runs"], 3, "{room}");
+    assert_eq!(above["path"]["room"]["breakout"]["runs"], 0);
+    let share = room["breakout"]["share"].as_f64().unwrap();
+    assert!(share > 0.0 && share < 1.0, "{share}");
+    let lp = |v: &Value| v["path"]["receiver_spl_db"].as_array().unwrap().iter().map(|b| b.as_f64().unwrap()).collect::<Vec<_>>();
+    assert!(lp(&over).iter().zip(lp(&above)).all(|(o, a)| o >= &a), "{:?} vs {:?}", lp(&over), lp(&above));
 }

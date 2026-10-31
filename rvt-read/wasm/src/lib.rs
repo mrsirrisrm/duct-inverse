@@ -12,7 +12,16 @@ use duct_heal::{graph, heal, ifc, path, rvt_native, Network, NodeKind};
 use serde_json::{json, Value};
 use wall_duct_core::metrics::octave::{N_BANDS, OCTAVE_BANDS_HZ};
 use wall_duct_core::model::{BlockParams, DuctSystem, Params, MAX_BLOCKS};
+use wall_duct_core::autodiff::Dual;
+use wall_duct_core::physics::breakout::{radiated_pwl_db, Ceiling, Run};
+use wall_duct_core::physics::duct_attenuation::segment_attenuation_db;
 use wall_duct_core::physics::source::{source_pwl, SourceType};
+
+/// Ducts' walls, 0.8 mm galvanised steel: the model gives no gauge.
+const DUCT_WALL_KG_M2: f64 = 6.3;
+/// The ceiling under a duct: the model does not say, and the lightest of
+/// TM 5-805-4's lets the most through.
+const CEILING: Ceiling = Ceiling::FibreglassTile;
 use wasm_bindgen::prelude::*;
 
 fn connectivity(net: &Network) -> Value {
@@ -191,7 +200,31 @@ pub fn analyse_bytes(
             }
         })
         .collect();
-    let rated = rooms::rate(&terminals, &spaces);
+    // Breakout: each straight on a rated path, once, radiating what enters it
+    // down through the ceiling of the room it is over.
+    let mut seen = std::collections::HashSet::new();
+    let mut sources = Vec::new();
+    for (_, _, mapped) in &paths {
+        let sys = DuctSystem::from_params(&params(mapped, rooms::DEFAULT_ROOM_M3, rooms::DEFAULT_RECEIVER_M));
+        let (mut q, mut pwl) = (sys.volume_flow(), source_pwl(sys.source_type, sys.source_offset));
+        for (block, m) in sys.blocks.iter().zip(mapped) {
+            q = block.flow_out(q);
+            if let BlockParams::Segment { length_m, width_m, height_m, lining_m, round, wrapped } = m.block {
+                let location = net.find(m.element).and_then(|n| net.nodes[n].ifc.as_ref()).and_then(|i| i.location);
+                let space = location.and_then(|p| ifc::space_at(&spaces, p));
+                if let (Some(location), Some(space), true) = (location, space, seen.insert(m.element)) {
+                    let c = Dual::<1>::constant;
+                    let per_m = segment_attenuation_db(c(1.0), c(width_m), c(height_m), c(lining_m), round, wrapped).map(|b| b.value);
+                    let run = Run { width_m, height_m, round, length_m, wall_kg_m2: DUCT_WALL_KG_M2 };
+                    let radiated = radiated_pwl_db(&pwl.map(|b| b.value), &run, &per_m);
+                    let ceiling = CEILING.transfer_db();
+                    sources.push(rooms::Source { pwl: std::array::from_fn(|i| radiated[i] - ceiling[i]), location, space });
+                }
+            }
+            pwl = block.forward(&pwl, q);
+        }
+    }
+    let rated = rooms::rate(&terminals, &sources, &spaces);
     let room_json = |r: &rooms::RoomRating| {
         let id = |k: usize| net.nodes[paths[k].0].id;
         json!({
@@ -199,6 +232,7 @@ pub fn analyse_bytes(
             "volume_m3": (r.volume_m3 * 10.0).round() / 10.0,
             "terminals": r.terminals.len(),
             "nc": r.nc,
+            "breakout": { "runs": r.breakout_runs, "share": (r.breakout_share * 1000.0).round() / 1000.0 },
             "receiver_under": id(r.receiver_under),
             "dominant": { "terminal": id(r.dominant), "distance_m": (r.dominant_distance_m * 100.0).round() / 100.0 },
         })
@@ -276,7 +310,7 @@ pub fn analyse_bytes(
             "elements": path.len(),
             "flow_l_s": q_unit * 1000.0,
             "bands_hz": OCTAVE_BANDS_HZ,
-            "source_lw_db": bands(source_pwl::<1>(sys.source_type, wall_duct_core::autodiff::Dual::constant(0.0)).iter().map(|b| b.value)),
+            "source_lw_db": bands(source_pwl::<1>(sys.source_type, Dual::constant(0.0)).iter().map(|b| b.value)),
             "blocks": blocks,
             "receiver_spl_db": bands(room.spl.iter().copied()),
             "nc": room.nc,
@@ -291,6 +325,7 @@ pub fn analyse_bytes(
             if source.is_some() { "source: the unit's sound power as given" } else { "source: a forward-curved fan at the unit's flow and 250 Pa (no sound data given)" },
             "rooms from the IFC's spaces, their volume their extent's; a receiver at 1.2 m under each diffuser, every diffuser in the room reaching it by Schultz's equation (a normally furnished room) at its distance; the room rated at its worst receiver",
             "a terminal in no space: rated alone, in 50 m3 at 2 m",
+            "breakout: each straight on a rated path over a room radiates through its walls (ASHRAE 1991, 0.8 mm galvanised steel) and a fibreglass tile ceiling (TM 5-805-4 table 7-1), from its midpoint",
             "ducts unlined, round where the IFC profile or the type name says so; a rectangular one insulated outside (an IFC covering) loses twice the bare figures (TM 5-805-4); transitions not modelled",
             "branches: power divides by the outlets' areas, the first duct below each, with ASHRAE's reflection below the main's cut-on; by flow where an outlet has no duct",
             "regen of bends, tees and dampers by Woods' method; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",

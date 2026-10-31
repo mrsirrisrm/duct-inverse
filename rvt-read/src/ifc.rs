@@ -913,9 +913,12 @@ pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
         }
         let (mut size, mut location) = (None, None);
         match e.shape {
-            Some(Shape::Axis { start, end, width, height, round }) if node.kind == NodeKind::DuctNoGeometry => {
-                node.kind = NodeKind::Duct { start, end, width, height, round };
-                report.geometry += 1;
+            Some(Shape::Axis { start, end, width, height, round }) => {
+                location = Some(mul(add(start, end), 0.5));
+                if node.kind == NodeKind::DuctNoGeometry {
+                    node.kind = NodeKind::Duct { start, end, width, height, round };
+                    report.geometry += 1;
+                }
             }
             Some(Shape::Box { frame, min, max }) => {
                 let centre = frame.apply(mul(add(min, max), 0.5));
