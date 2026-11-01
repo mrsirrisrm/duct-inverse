@@ -6,7 +6,7 @@
 //!     L_W = K + 10 log10(S) + 55 log10(V) − 45,  less a band correction
 //! ```
 //! or, where the fitting's pressure loss factor `ζ` is known, CIBSE Guide B
-//! (2005) 5.A2's detailed method as Strutt gives it, `σ = 1 / (√ζ + 1)` the
+//! (2005) 5.A2.4's detailed method (equations 5.A2.5 to 5.A2.11), `σ = 1 / (√ζ + 1)` the
 //! clear area ratio, `v_c = u / σ`, `d = b (1 − σ)` for `b` the duct across
 //! the constriction, `St = f d / v_c`:
 //! ```text
@@ -30,10 +30,10 @@ use crate::metrics::octave::{N_BANDS, OCTAVE_BANDS_HZ};
 /// Woods' octave band corrections to a fitting's total, 63 Hz to 8 kHz.
 const WOODS_BAND: [f64; N_BANDS] = [-6.0, -6.0, -7.0, -7.0, -8.0, -10.0, -17.0, -29.0];
 
-/// CIBSE Guide B fig. 5.A2.3 (±2 dB), read off: 20 lg K is 75.5 dB to
-/// St = 1, then falls straight in log St to 12.5 dB at St = 200; beyond, the
-/// line is carried on.
-const K_PLATEAU_DB: f64 = 75.5;
+/// CIBSE Guide B fig. 5.A2.3 (±2 dB), read off: 20 lg K is 75 dB to St = 1
+/// (the plateau example 5.A2.1 reads), then falls straight in log St to
+/// 12.5 dB at St = 200; beyond, the line is carried on.
+const K_PLATEAU_DB: f64 = 75.0;
 const K_AT_200_DB: f64 = 12.5;
 const C_AIR: f64 = 343.0;
 
@@ -126,25 +126,40 @@ mod tests {
         }
     }
 
+    /// CIBSE Guide B example 5.A2.1: 600 x 400 mm, the 400 across the
+    /// constriction, ζ = 1.25, 15 m/s. Below cut-on (286 Hz), at 125 Hz,
+    /// −37 + 75 + 2 − 6 + 47 = 81 dB; above, at 1 kHz (St 6.6, 20 lg K 53),
+    /// −84 + 53 + 16 + 1 + 13 − 6 + 71 = 64 dB, each term rounded; unrounded
+    /// 80.8 and 63.5.
+    #[test]
+    fn cibse_guide_b_example() {
+        let c = Dual::<1>::constant;
+        let lw = cibse_fitting_pwl_db(1.25, c(15.0), c(0.24), c(0.4), c(0.6));
+        assert_relative_eq!(lw[1].value, 81.0, epsilon = 0.5);
+        assert_relative_eq!(lw[4].value, 64.0, epsilon = 0.6);
+    }
+
     /// A mitred bend, ζ = 1.2, 0.7 m square at 10 m/s: σ = 0.4772,
     /// v_c = 20.95 m/s, d = 0.3660 m, f_c = 245 Hz. At 125 Hz St = 2.183,
-    /// 20 lg K = 75.5 − 27.38 lg 2.183 = 66.21, L_W = −37 + 66.21 + 1.58
-    /// − 3.10 + 40 = 67.69 dB; at 1 kHz St = 17.47, 20 lg K = 41.49,
-    /// L_W = −84 + 41.49 + 24.85 + 0.79 + 12.85 − 3.10 + 60 = 52.88 dB.
+    /// 20 lg K = 75 − 27.16 lg 2.183 = 65.79, L_W = −37 + 65.79 + 1.58
+    /// − 3.10 + 40 = 67.27 dB; at 1 kHz St = 17.47, 20 lg K = 41.26,
+    /// L_W = −84 + 41.26 + 24.85 + 0.79 + 12.85 − 3.10 + 60 = 52.65 dB.
     #[test]
     fn cibse_mitred_bend() {
         let c = Dual::<1>::constant;
         let lw = cibse_fitting_pwl_db(1.2, c(10.0), c(0.49), c(0.7), c(0.7));
-        assert_relative_eq!(lw[1].value, 67.69, epsilon = 0.02);
-        assert_relative_eq!(lw[4].value, 52.88, epsilon = 0.02);
+        assert_relative_eq!(lw[1].value, 67.27, epsilon = 0.02);
+        assert_relative_eq!(lw[4].value, 52.65, epsilon = 0.02);
     }
 
-    /// The figure, read back: the plateau to St = 1, 40 dB at St = 20.
+    /// The figure, read back: the plateau to St = 1, 40 dB at St = 20, and
+    /// example 5.A2.1's 53 dB at St = 6.6.
     #[test]
     fn k_of_strouhal() {
         let c = Dual::<1>::constant;
-        assert_relative_eq!(k_st_db(c(0.3)).value, 75.5);
-        assert_relative_eq!(k_st_db(c(20.0)).value, 40.0, epsilon = 0.2);
+        assert_relative_eq!(k_st_db(c(0.3)).value, 75.0);
+        assert_relative_eq!(k_st_db(c(20.0)).value, 40.0, epsilon = 0.5);
+        assert_relative_eq!(k_st_db(c(6.6)).value, 53.0, epsilon = 0.5);
         assert_relative_eq!(k_st_db(c(200.0)).value, 12.5, max_relative = 1e-12);
     }
 
