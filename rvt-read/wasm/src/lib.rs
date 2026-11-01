@@ -265,6 +265,7 @@ pub fn analyse_bytes(
     let mut q = sys.volume_flow();
     let mut pwl = source_pwl(sys.source_type, sys.source_offset);
     let mut blocks = Vec::new();
+    let last_branch = mapped.iter().rposition(|m| matches!(m.block, BlockParams::Branch { .. }));
     for (k, (block, m)) in sys.blocks.iter().zip(mapped).enumerate() {
         q = block.flow_out(q);
         pwl = block.forward(&pwl, q);
@@ -277,6 +278,20 @@ pub fn analyse_bytes(
             BlockParams::Attenuator { width_m, height_m, .. } => Some(q.value / (width_m * height_m)),
             _ => None,
         };
+        let grade = match (m.block, velocity) {
+            (BlockParams::Segment { round, .. }, Some(v)) => {
+                let grade = velocity_grade(v, round, last_branch.is_some_and(|b| k < b));
+                if matches!(grade, "non-critical" | "none") {
+                    warnings.push(format!(
+                        "duct {} at {v:.1} m/s is over CIBSE Guide B table 5.2's limit above a suspended ceiling for a normal space{}",
+                        m.element,
+                        if grade == "none" { ", and a non-critical one's" } else { "" }
+                    ));
+                }
+                Some(grade)
+            }
+            _ => None,
+        };
         blocks.push(json!({
             "index": k,
             "type": m.block.type_name(),
@@ -285,6 +300,7 @@ pub fn analyse_bytes(
             "params": format!("{:?}", m.block),
             "flow_l_s": q.value * 1000.0,
             "velocity_m_s": velocity,
+            "velocity_grade": grade,
             "lw_db": bands(pwl.iter().map(|b| b.value)),
         }));
     }
@@ -336,6 +352,7 @@ pub fn analyse_bytes(
                 chain::BendRegen::Cibse => "regen of bends by CIBSE Guide B's detailed method, at the IFC's loss coefficient or else a typical one (mitred 1.2, vaned 0.3, radiused 0.25); of tees and dampers by Woods'; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
                 chain::BendRegen::Woods => "regen of bends, tees and dampers by Woods' method; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
             },
+            "velocity grades: CIBSE Guide B table 5.2 for ducts above a suspended ceiling (critical/normal/non-critical spaces), mains before the path's last branch 50% more; a warning past the normal space's",
             "end reflection: diffusers flush with a hard ceiling (a tile ceiling would lose ~2 dB more at 63-125 Hz)",
             "dampers open; a VAV box is its damper, 15° closed",
             "silencers: length from the IFC, section from the duct, free area 0.5 and 100 mm splitters assumed",
@@ -344,6 +361,22 @@ pub fn analyse_bytes(
         ],
         "warnings": warnings,
     }))
+}
+
+/// The strictest space whose duct velocity limit `v` m/s meets, CIBSE Guide
+/// B table 5.2, ducts above a suspended ceiling: "critical" (a private
+/// office, NR 25), "normal" (a general office, NR 35), "non-critical"
+/// (circulation, NR 45) or "none". The table is for final runs to outlets;
+/// a `main` (before the path's last branch) may run 50 % faster.
+pub fn velocity_grade(v: f64, round: bool, main: bool) -> &'static str {
+    let limits = if round { [5.0, 7.0, 10.0] } else { [3.0, 5.0, 6.0] };
+    let scale = if main { 1.5 } else { 1.0 };
+    match limits.iter().position(|&l| v <= l * scale) {
+        Some(0) => "critical",
+        Some(1) => "normal",
+        Some(_) => "non-critical",
+        None => "none",
+    }
 }
 
 /// JS entry point: `analyse(rvt?: Uint8Array, ifc?: Uint8Array, lw?:
@@ -363,6 +396,18 @@ mod tests {
     /// TM 5-805-4's worked example: 20,000 cfm at 2.5 in. wg with a 6 dB
     /// efficiency correction gives 104 100 96 95 91 89 85; at 1 in. wg and
     /// peak efficiency that is 14 dB (20 lg 2.5 + 6) less.
+    /// Table 5.2 above a suspended ceiling: rectangular 3, 5 and 6 m/s, round
+    /// 5, 7 and 10; a main 50 % more.
+    #[test]
+    fn velocity_grades() {
+        use super::velocity_grade;
+        assert_eq!(velocity_grade(4.0, false, false), "normal");
+        assert_eq!(velocity_grade(4.0, false, true), "critical");
+        assert_eq!(velocity_grade(6.5, false, false), "none");
+        assert_eq!(velocity_grade(8.0, true, false), "non-critical");
+        assert_eq!(velocity_grade(14.0, true, true), "non-critical");
+    }
+
     #[test]
     fn fan_estimate_reproduces_tm_example() {
         let lw = super::fan_estimate(20_000.0 * 0.000_471_947);
