@@ -204,6 +204,38 @@ mod tests {
         assert!(rated[0].nc >= rated[1].nc);
     }
 
+    /// CIBSE Guide B equation 5.11: under a regular array of ceiling
+    /// diffusers, each of power L_W serving one floor area, the level at
+    /// 1.5 m is L_W − D (table 5.13, ±2-5 dB). A 7 x 7 array summed here
+    /// comes within 2 dB of it for every row of the table, 0 to 1.5 dB
+    /// louder.
+    #[test]
+    fn diffuser_array_as_cibse_eq_5_11() {
+        // (ceiling height m, floor area per diffuser m², D 63 Hz to 4 kHz),
+        // each range's middle.
+        let rows: [(f64, f64, [f64; 7]); 6] = [
+            (2.55, 11.65, [2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]),
+            (2.55, 20.5, [3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]),
+            (3.35, 16.25, [4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]),
+            (3.35, 25.5, [5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0]),
+            (4.6, 25.5, [7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0]),
+            (4.6, 34.75, [8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0]),
+        ];
+        for (h, area, d) in rows {
+            let (s, n) = (area.sqrt(), 7);
+            let side = s * n as f64;
+            let space = IfcSpace { name: "Open plan".into(), min: [0.0, 0.0, 0.0], max: [side, side, h] };
+            let t: Vec<Terminal> = (0..n * n)
+                .map(|k| Terminal { pwl: [0.0; N_BANDS], location: Some([s * ((k % n) as f64 + 0.5), s * ((k / n) as f64 + 0.5), h]), space: Some(0) })
+                .collect();
+            let r = rate(&t, &[], &[space]).remove(0);
+            for b in 0..7 {
+                let over = r.spl[b] + d[b];
+                assert!((-0.5..=2.0).contains(&over), "{h} m, {area} m², band {b}: {over:.1} dB over CIBSE");
+            }
+        }
+    }
+
     /// A run over the room adds at every receiver by its distance, and its
     /// share is reported; one over another room does not.
     #[test]
