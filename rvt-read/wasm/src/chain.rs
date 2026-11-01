@@ -159,19 +159,27 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>
             );
         }
         let ty = classify_node(node);
-        let wrapped = node.ifc.as_ref().is_some_and(|i| i.insulated);
+        let covers = net.covers.get(&node.id).copied().unwrap_or_default();
+        let wrapped = covers.insulated || node.ifc.as_ref().is_some_and(|i| i.insulated);
+        let lining_m = covers.lining_m.unwrap_or(0.0);
+        let covered = |what: &str| match (lining_m > 0.0, wrapped) {
+            (true, true) => format!("{what}, lined {:.0} mm, insulated", lining_m * 1000.0),
+            (true, false) => format!("{what}, lined {:.0} mm", lining_m * 1000.0),
+            (false, true) => format!("{what}, insulated"),
+            (false, false) => what.into(),
+        };
         match node.kind {
             NodeKind::Duct { start, end, width, height, round } => push(
-                BlockParams::Segment { length_m: dist(start, end), width_m: width, height_m: height, lining_m: 0.0, round, wrapped },
-                if wrapped { "duct, insulated".into() } else { "duct".into() },
+                BlockParams::Segment { length_m: dist(start, end), width_m: width, height_m: height, lining_m, round, wrapped },
+                covered("duct"),
             ),
             // Undecoded straights and flex: length from the elements either side.
             NodeKind::DuctNoGeometry | NodeKind::Undecoded => {
                 let ends = (net.nodes[prev].location, path.get(i + 1).and_then(|&m| net.nodes[m].location));
                 if let ((Some(a), Some(b)), Some((w, h, round))) = (ends, section(net, path, i)) {
                     push(
-                        BlockParams::Segment { length_m: dist(a, b).max(0.01), width_m: w, height_m: h, lining_m: 0.0, round, wrapped },
-                        "duct, length from neighbours".into(),
+                        BlockParams::Segment { length_m: dist(a, b).max(0.01), width_m: w, height_m: h, lining_m, round, wrapped },
+                        covered("duct, length from neighbours"),
                     );
                 }
             }
@@ -193,7 +201,9 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>
                             (Some(z), format!("{}, ζ {z:.2} typical", node.family))
                         }
                     };
-                    push(BlockParams::Bend { width_m: w, height_m: h, kind, lined: false, round, zeta }, note);
+                    let lined = lining_m > 0.0;
+                    let note = if lined { format!("{note}, lined") } else { note };
+                    push(BlockParams::Bend { width_m: w, height_m: h, kind, lined, round, zeta }, note);
                 }
             }
             // Dampers as found, open; a VAV box's modulating, taken 15° closed.
@@ -246,4 +256,50 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duct_heal::{Covers, EdgeSource, Node};
+
+    /// Revit's lining on a duct and a bend reaches their blocks; its
+    /// insulation on the duct wraps it.
+    #[test]
+    fn revit_covers() {
+        let node = |id, kind, family: &str| Node {
+            id,
+            kind,
+            family: family.into(),
+            type_name: String::new(),
+            systems: vec!["Supply Air".into()],
+            location: None,
+            flow: Some(0.2),
+            ifc: None,
+        };
+        let duct = |id, x: f64| {
+            node(id, NodeKind::Duct { start: [x, 0.0, 0.0], end: [x + 2.0, 0.0, 0.0], width: 0.4, height: 0.3, round: false }, "")
+        };
+        let mut net = Network::default();
+        let path = vec![
+            net.add_node(node(1, NodeKind::Equipment, "AHU")),
+            net.add_node(duct(2, 0.0)),
+            net.add_node(node(3, NodeKind::Fitting, "Rectangular Elbow - Radius")),
+            net.add_node(duct(4, 2.0)),
+        ];
+        for w in path.windows(2) {
+            net.connect(w[0], w[1], EdgeSource::Recorded);
+        }
+        net.covers.insert(2, Covers { insulated: true, lining_m: Some(0.025) });
+        net.covers.insert(3, Covers { insulated: false, lining_m: Some(0.025) });
+        let mut children = vec![Vec::new(); 4];
+        for w in path.windows(2) {
+            children[w[0]].push(w[1]);
+        }
+        let mapped = chain(&net, &path, &[0.2; 4], &children, BendRegen::default());
+        let blocks: Vec<_> = mapped.iter().map(|m| (&m.block, m.note.as_str())).collect();
+        assert!(matches!(blocks[0], (BlockParams::Segment { lining_m: 0.025, wrapped: true, .. }, "duct, lined 25 mm, insulated")));
+        assert!(matches!(blocks[1], (BlockParams::Bend { lined: true, .. }, _)), "{}", blocks[1].1);
+        assert!(matches!(blocks[2], (BlockParams::Segment { lining_m: 0.0, wrapped: false, .. }, "duct")));
+    }
 }

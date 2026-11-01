@@ -32,6 +32,15 @@ pub struct Node {
     pub ifc: Option<IfcInfo>,
 }
 
+/// A Revit model's insulation and lining on an element.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Covers {
+    /// Insulation outside it.
+    pub insulated: bool,
+    /// Lining inside it, its thickness in metres.
+    pub lining_m: Option<f64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct IfcInfo {
     /// Specific class, upper case ("IFCDUCTSILENCER").
@@ -72,6 +81,9 @@ pub struct Network {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
     index: HashMap<i64, usize>,
+    /// What the Revit model says covers each element, by id: an element an
+    /// IFC adds later has its covers too.
+    pub covers: HashMap<i64, Covers>,
 }
 
 impl Network {

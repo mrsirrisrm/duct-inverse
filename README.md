@@ -43,7 +43,9 @@ npm run dev
 - `scripts/rebuild-wasm.sh` — rebuild wasm and refresh `wasm/`.
 - `scripts/fetch-samples.sh` — fetch the public sample models (NIBS Clinic,
   Autodesk's rme_advanced and Snowdon Towers, Granlund's BIM4LCA housing) into
-  the gitignored `samples/`, checked against their hashes.
+  the gitignored `samples/`, checked against their hashes. With them,
+  `DUCT_SAMPLES=$PWD/samples cargo test --features rvt` in `rvt-read/` holds
+  the insulation read from Granlund's `.rvt` to Revit's IFC export of it.
 
 ## Deploying to Vercel
 

@@ -20,4 +20,4 @@ pub mod rvt_json;
 #[cfg(feature = "rvt")]
 pub mod rvt_native;
 
-pub use network::{EdgeSource, IfcInfo, Network, Node, NodeKind};
+pub use network::{Covers, EdgeSource, IfcInfo, Network, Node, NodeKind};

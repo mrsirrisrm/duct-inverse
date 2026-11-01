@@ -27,7 +27,7 @@ pub fn network(bytes: Vec<u8>, progress: &rvt::control::WalkerControl) -> Result
 }
 
 /// [`network`], calling `lap` with each stage's name as it finishes
-/// ("walk", "parameters", "build"), for timing.
+/// ("walk", "parameters", "build", "covers"), for timing.
 pub fn network_with_laps(
     bytes: Vec<u8>,
     progress: &rvt::control::WalkerControl,
@@ -51,7 +51,28 @@ pub fn network_with_laps(
         fields: e.fields.iter().filter_map(field).collect(),
         flow_cfs: build::flow_from_parameters(&saved.entries_for(e)),
     });
-    let net = build::build(duct_elements, &decoded);
+    let mut net = build::build(duct_elements, &decoded);
     lap("build");
+    covers(&mut file, &mut net);
+    lap("covers");
     Ok(net)
+}
+
+/// What covers each element, by its id. A lining with no thickness is left
+/// out: the attenuation needs one.
+fn covers(file: &mut RevitFile, net: &mut Network) {
+    use rvt::elements::insulation::{coverings_lossy, CoveringKind};
+    for c in coverings_lossy(file).value {
+        let Some(host) = c.host_id else { continue };
+        let covers = net.covers.entry(host.get()).or_default();
+        match c.kind {
+            CoveringKind::DuctInsulation => covers.insulated = true,
+            CoveringKind::DuctLining => {
+                if let Some(t) = c.thickness_feet.filter(|&t| t > 0.0) {
+                    covers.lining_m = Some(t * build::FT);
+                }
+            }
+            _ => {}
+        }
+    }
 }

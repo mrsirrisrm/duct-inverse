@@ -345,7 +345,7 @@ pub fn analyse_bytes(
             "rooms from the IFC's spaces, their volume their extent's; a receiver at 1.2 m under each diffuser, every diffuser in the room reaching it by Schultz's equation (a normally furnished room) at its distance; the room rated at its worst receiver",
             "a terminal in no space: rated alone, in 50 m3 at 2 m",
             "breakout: each straight on a rated path over a room radiates through its walls (ASHRAE 1991, 0.8 mm galvanised steel) and a fibreglass tile ceiling (TM 5-805-4 table 7-1), from its midpoint",
-            "ducts unlined, round where the IFC profile or the type name says so; a rectangular one insulated outside (an IFC covering) loses twice the bare figures (TM 5-805-4); transitions not modelled",
+            "ducts lined where the Revit model lines them (Reynolds and Bevirt), bends too (TM 5-805-4 table 7-6), else unlined; round where the IFC profile or the type name says so; a rectangular one insulated outside (a Revit insulation or an IFC covering) loses twice the bare figures (TM 5-805-4); transitions not modelled",
             "branches: power divides by the outlets' areas, the first duct below each, with ASHRAE's reflection below the main's cut-on; by flow where an outlet has no duct",
             match bend_regen {
                 chain::BendRegen::Recorded => "regen of bends by CIBSE Guide B's detailed method where the IFC records a loss coefficient, else by Woods' method; of tees and dampers by Woods'; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
@@ -393,9 +393,6 @@ pub fn analyse(bytes: Option<Vec<u8>>, ifc: Option<Vec<u8>>, lw: Option<Vec<f64>
 
 #[cfg(test)]
 mod tests {
-    /// TM 5-805-4's worked example: 20,000 cfm at 2.5 in. wg with a 6 dB
-    /// efficiency correction gives 104 100 96 95 91 89 85; at 1 in. wg and
-    /// peak efficiency that is 14 dB (20 lg 2.5 + 6) less.
     /// Table 5.2 above a suspended ceiling: rectangular 3, 5 and 6 m/s, round
     /// 5, 7 and 10; a main 50 % more.
     #[test]
@@ -408,6 +405,9 @@ mod tests {
         assert_eq!(velocity_grade(14.0, true, true), "non-critical");
     }
 
+    /// TM 5-805-4's worked example: 20,000 cfm at 2.5 in. wg with a 6 dB
+    /// efficiency correction gives 104 100 96 95 91 89 85; at 1 in. wg and
+    /// peak efficiency that is 14 dB (20 lg 2.5 + 6) less.
     #[test]
     fn fan_estimate_reproduces_tm_example() {
         let lw = super::fan_estimate(20_000.0 * 0.000_471_947);

@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use crate::network::{EdgeSource, Network, Node, NodeKind, Point};
 
-const FT: f64 = 0.3048;
+pub(crate) const FT: f64 = 0.3048;
 pub const CFS: f64 = 0.028_316_846_592;
 
 /// A field value, as much of it as the network needs.
