@@ -72,7 +72,7 @@ fn model(office: bool, plenum: bool, void: bool) -> String {
 
 fn analyse_model(office: bool, plenum: bool, void: bool) -> Value {
     let control = rvt::control::WalkerControl::new();
-    duct_pipeline::analyse_bytes(None, Some(model(office, plenum, void).as_bytes()), None, &control).expect("analyse")
+    duct_pipeline::analyse_bytes(None, Some(model(office, plenum, void).as_bytes()), None, Default::default(), &control).expect("analyse")
 }
 
 fn analyse(office: bool) -> Value {

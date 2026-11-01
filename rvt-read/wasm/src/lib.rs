@@ -91,11 +91,13 @@ fn bands(spectrum: impl Iterator<Item = f64>) -> Vec<f64> {
 /// The report for one Revit file's bytes, with its IFC export's if given, or
 /// for an IFC on its own. Without a Revit file, `recorded` is what the IFC's
 /// ports and ends-inside joins give. `source` is the unit's discharge sound
-/// power, 63 Hz to 8 kHz, where its data gives one.
+/// power, 63 Hz to 8 kHz, where its data gives one; `bend_regen` how bends'
+/// regenerated noise is found.
 pub fn analyse_bytes(
     bytes: Option<Vec<u8>>,
     ifc_bytes: Option<&[u8]>,
     source: Option<[f64; N_BANDS]>,
+    bend_regen: chain::BendRegen,
     control: &rvt::control::WalkerControl,
 ) -> Result<Value, String> {
     let mut stage = clock_ms();
@@ -181,7 +183,7 @@ pub fn analyse_bytes(
     let paths: Vec<_> = candidates
         .into_iter()
         .filter_map(|(t, p)| {
-            let mapped = chain::chain(&net, &p, &cp.flow, &children);
+            let mapped = chain::chain(&net, &p, &cp.flow, &children, bend_regen);
             (mapped.len() <= MAX_BLOCKS).then_some((t, p, mapped))
         })
         .collect();
@@ -328,7 +330,11 @@ pub fn analyse_bytes(
             "breakout: each straight on a rated path over a room radiates through its walls (ASHRAE 1991, 0.8 mm galvanised steel) and a fibreglass tile ceiling (TM 5-805-4 table 7-1), from its midpoint",
             "ducts unlined, round where the IFC profile or the type name says so; a rectangular one insulated outside (an IFC covering) loses twice the bare figures (TM 5-805-4); transitions not modelled",
             "branches: power divides by the outlets' areas, the first duct below each, with ASHRAE's reflection below the main's cut-on; by flow where an outlet has no duct",
-            "regen of bends by CIBSE Guide B's detailed method where the IFC records a loss coefficient, else, with tees and dampers, by Woods' method; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
+            match bend_regen {
+                chain::BendRegen::Recorded => "regen of bends by CIBSE Guide B's detailed method where the IFC records a loss coefficient, else by Woods' method; of tees and dampers by Woods'; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
+                chain::BendRegen::Cibse => "regen of bends by CIBSE Guide B's detailed method, at the IFC's loss coefficient or else a typical one (mitred 1.2, vaned 0.3, radiused 0.25); of tees and dampers by Woods'; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
+                chain::BendRegen::Woods => "regen of bends, tees and dampers by Woods' method; of diffusers by CIBSE Guide B, pressure loss factor 4; silencers' own noise neglected",
+            },
             "end reflection: diffusers flush with a hard ceiling (a tile ceiling would lose ~2 dB more at 63-125 Hz)",
             "dampers open; a VAV box is its damper, 15° closed",
             "silencers: length from the IFC, section from the duct, free area 0.5 and 100 mm splitters assumed",
@@ -340,13 +346,14 @@ pub fn analyse_bytes(
 }
 
 /// JS entry point: `analyse(rvt?: Uint8Array, ifc?: Uint8Array, lw?:
-/// Float64Array) -> string` (the JSON report), a model file at least, `lw`
-/// the unit's sound power in the 8 bands. Run it in a Web Worker: a 40 MB
-/// model takes 10 to 20 s.
+/// Float64Array, bendRegen?: "recorded" | "cibse" | "woods") -> string` (the
+/// JSON report), a model file at least, `lw` the unit's sound power in the 8
+/// bands. Run it in a Web Worker: a 40 MB model takes 10 to 20 s.
 #[wasm_bindgen]
-pub fn analyse(bytes: Option<Vec<u8>>, ifc: Option<Vec<u8>>, lw: Option<Vec<f64>>) -> Result<String, JsValue> {
+pub fn analyse(bytes: Option<Vec<u8>>, ifc: Option<Vec<u8>>, lw: Option<Vec<f64>>, bend_regen: Option<String>) -> Result<String, JsValue> {
     let source = lw.map(|v| <[f64; N_BANDS]>::try_from(v).map_err(|_| JsValue::from_str("give the unit's sound power in 8 bands, 63 Hz to 8 kHz"))).transpose()?;
-    let report = analyse_bytes(bytes, ifc.as_deref(), source, &rvt::control::WalkerControl::new()).map_err(|e| JsValue::from_str(&e))?;
+    let bend_regen = bend_regen.map(|s| s.parse()).transpose().map_err(|e: String| JsValue::from_str(&e))?.unwrap_or_default();
+    let report = analyse_bytes(bytes, ifc.as_deref(), source, bend_regen, &rvt::control::WalkerControl::new()).map_err(|e| JsValue::from_str(&e))?;
     Ok(report.to_string())
 }
 

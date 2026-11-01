@@ -15,6 +15,42 @@ use wall_duct_core::physics::plenum::Openings;
 /// one is lined, and bare is the least loss.
 pub const PLENUM_ALPHA: f64 = 0.05;
 
+/// How a bend's regenerated noise is found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BendRegen {
+    /// CIBSE's detailed method where the model records a loss coefficient,
+    /// else Woods'.
+    #[default]
+    Recorded,
+    /// CIBSE's detailed method always, at a typical loss coefficient for the
+    /// elbow's kind where none is recorded.
+    Cibse,
+    /// Woods' method always.
+    Woods,
+}
+
+impl std::str::FromStr for BendRegen {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "recorded" => Ok(Self::Recorded),
+            "cibse" => Ok(Self::Cibse),
+            "woods" => Ok(Self::Woods),
+            _ => Err(format!("bend regen: \"recorded\", \"cibse\" or \"woods\", not {s:?}")),
+        }
+    }
+}
+
+/// A 90° elbow's typical loss coefficient: rough textbook figures for a
+/// square section, not any one table's.
+pub fn typical_zeta(kind: ElbowKind) -> f64 {
+    match kind {
+        ElbowKind::Mitred => 1.2,
+        ElbowKind::Vaned => 0.3,
+        ElbowKind::Radiused => 0.25,
+    }
+}
+
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
@@ -102,7 +138,7 @@ pub struct Mapped {
 /// The chain for `path`. A branch is inserted wherever the flow drops between
 /// neighbouring elements: takeoffs join mid-duct, so a branch can leave a
 /// duct as well as a fitting. `children` is the path's tree's, by node.
-pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>]) -> Vec<Mapped> {
+pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>], bend_regen: BendRegen) -> Vec<Mapped> {
     let mut out = Vec::new();
     for (i, &n) in path.iter().enumerate().skip(1) {
         let node = &net.nodes[n];
@@ -148,10 +184,14 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>
                         Some(ElementType::ElbowMitredVanes) => ElbowKind::Vaned,
                         _ => ElbowKind::Radiused,
                     };
-                    let zeta = node.ifc.as_ref().and_then(|i| i.loss_coefficient);
-                    let note = match zeta {
-                        Some(z) => format!("{}, ζ {z:.2}", node.family),
-                        None => node.family.clone(),
+                    let recorded = node.ifc.as_ref().and_then(|i| i.loss_coefficient);
+                    let (zeta, note) = match (bend_regen, recorded) {
+                        (BendRegen::Woods, _) | (BendRegen::Recorded, None) => (None, node.family.clone()),
+                        (_, Some(z)) => (Some(z), format!("{}, ζ {z:.2}", node.family)),
+                        (BendRegen::Cibse, None) => {
+                            let z = typical_zeta(kind);
+                            (Some(z), format!("{}, ζ {z:.2} typical", node.family))
+                        }
                     };
                     push(BlockParams::Bend { width_m: w, height_m: h, kind, lined: false, round, zeta }, note);
                 }
