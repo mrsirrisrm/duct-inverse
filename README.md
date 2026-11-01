@@ -34,7 +34,8 @@ npm run dev
   diffuser noise); `cargo run --example reference` sets them beside their
   references, and `cargo run --example tm_classroom` runs TM 5-805-4's worked
   supply path (§7-6) element by element, which `tests/tm_classroom.rs` holds
-  the engine to.
+  the engine to; `tests/cibse_office.rs` does the same for CIBSE Guide B's
+  unlined office supply (example 5.A4.1).
 - `rust/wall-duct-wasm/` — `#[wasm_bindgen]` wrapper exposing a single
   `evaluate(params)` entry point returning a `DesignFacts` JSON object.
 - `duct_poc/` — the original Python / PyTorch PoC, which the Rust core began
