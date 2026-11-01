@@ -16,8 +16,11 @@
 //!   loses twice the unlined figures (TM 5-805-4, table 7-2's note).
 //! - **Round** (ASHRAE's table for straight round duct, by diameter range):
 //!   0.01 to 0.1 dB/ft, the stiff wall losing far less than a flat one at
-//!   low frequency. A lined round duct is taken as unlined, short of its
-//!   own fit: conservative.
+//!   low frequency.
+//! - **Lined round** (CIBSE Guide B table 5.5, after NEBB, 25 mm lining, by
+//!   diameter range): a thicker lining adds "only a small amount", so the
+//!   table stands for any; thinner than RAMP_IN it falls linearly to bare,
+//!   and never below the bare duct's.
 
 use crate::autodiff::Dual;
 
@@ -116,6 +119,28 @@ pub fn attenuation_db_per_m<const N: usize>(
     })
 }
 
+/// CIBSE Guide B table 5.5, dB/m, 63 Hz to 8 kHz, for diameters up to 300,
+/// 600, 900 and 1200 mm (150 mm the table's least).
+const LINED_ROUND: [(f64, [f64; N_BANDS]); 4] = [
+    (0.3, [1.0, 2.0, 3.0, 5.0, 7.0, 6.0, 5.0, 4.0]),
+    (0.6, [0.5, 1.0, 2.0, 4.0, 6.0, 5.0, 4.0, 3.0]),
+    (0.9, [0.0, 0.5, 1.0, 3.0, 4.0, 3.0, 2.0, 2.0]),
+    (1.2, [0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0]),
+];
+
+/// Per-metre attenuation of a lined round duct of diameter `d`, lining
+/// `t`.
+pub fn lined_round_db_per_m<const N: usize>(diameter_m: f64, lining_thickness_m: Dual<N>) -> [Dual<N>; N_BANDS] {
+    let row = LINED_ROUND.iter().find(|r| diameter_m <= r.0).unwrap_or(&LINED_ROUND[LINED_ROUND.len() - 1]);
+    let t_in = (lining_thickness_m * IN_PER_M).max_f(0.0);
+    let share = if t_in.value < RAMP_IN { t_in / RAMP_IN } else { Dual::constant(1.0) };
+    let bare = round_db_per_m(diameter_m);
+    std::array::from_fn(|i| {
+        let lined = share * row.1[i];
+        if lined.value > bare[i] { lined } else { Dual::constant(bare[i]) }
+    })
+}
+
 /// Per-metre attenuation of a round duct of diameter `d`.
 pub fn round_db_per_m(diameter_m: f64) -> [f64; N_BANDS] {
     let d_in = diameter_m * IN_PER_M;
@@ -126,7 +151,7 @@ pub fn round_db_per_m(diameter_m: f64) -> [f64; N_BANDS] {
 /// Total attenuation of a duct segment of given length: rectangular
 /// `width_m` x `height_m`, or round of diameter `width_m`; `wrapped` if
 /// insulated outside, which the round duct's figures do not take; a
-/// rectangular one's lining by `fit`.
+/// rectangular one's lining by `fit`, a round one's by CIBSE's table.
 pub fn segment_attenuation_db<const N: usize>(
     length_m: Dual<N>,
     width_m: Dual<N>,
@@ -137,7 +162,7 @@ pub fn segment_attenuation_db<const N: usize>(
     fit: LinedFit,
 ) -> [Dual<N>; N_BANDS] {
     if round {
-        return round_db_per_m(width_m.value).map(|per_m| length_m * per_m);
+        return lined_round_db_per_m(width_m.value, lining_thickness_m).map(|per_m| per_m * length_m);
     }
     attenuation_db_per_m(width_m, height_m, lining_thickness_m, wrapped, fit).map(|per_m| per_m * length_m)
 }
@@ -221,6 +246,21 @@ mod tests {
         // 500 Hz, 1 kHz should rise.
         assert!(a2[3].value > a1[3].value);
         assert!(a2[4].value > a1[4].value);
+    }
+
+    /// A lined 254 mm round duct loses table 5.5's top row; a 750 mm one
+    /// its third, with the bare duct's 0.03 dB/ft where that is more; with
+    /// no lining it is the bare duct.
+    #[test]
+    fn lined_round_by_cibse() {
+        let c = Dual::<1>::constant;
+        let small = lined_round_db_per_m(0.254, c(0.025));
+        (0..N_BANDS).for_each(|i| assert_relative_eq!(small[i].value, LINED_ROUND[0].1[i]));
+        let large = lined_round_db_per_m(0.75, c(0.025));
+        assert_relative_eq!(large[0].value, round_db_per_m(0.75)[0]);
+        assert_relative_eq!(large[3].value, 3.0);
+        let bare = lined_round_db_per_m(0.254, c(0.0));
+        (0..N_BANDS).for_each(|i| assert_relative_eq!(bare[i].value, round_db_per_m(0.254)[i]));
     }
 
     /// A 10 in round duct loses ASHRAE's 0.03 dB/ft at 63 Hz, a tenth of
