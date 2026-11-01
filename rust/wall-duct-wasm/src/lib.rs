@@ -18,6 +18,7 @@ use wall_duct_core::model::{
     SLOT_LOG_RECEIVER_DISTANCE, SLOT_LOG_ROOM_VOLUME, SLOT_LOG_VOLUME_FLOW,
     SLOT_SOURCE_OFFSET, SYSTEM_SLOTS,
 };
+use wall_duct_core::physics::duct_attenuation::LinedFit;
 use wall_duct_core::physics::elbow::ElbowKind;
 use wall_duct_core::physics::end_reflection::Termination;
 use wall_duct_core::physics::source::SourceType;
@@ -32,6 +33,9 @@ pub struct InputParams {
     pub room_volume_m3: f64,
     pub receiver_distance_m: f64,
     pub blocks: Vec<InputBlock>,
+    /// Lined ducts' fit: "reynolds_bevirt" (the default) or "ari885".
+    #[serde(default)]
+    pub lined_fit: Option<String>,
 }
 
 /// Tagged union for block input. `kind` discriminates the variant; irrelevant
@@ -59,6 +63,14 @@ pub enum InputBlock {
     },
     #[serde(rename = "diffuser")]
     Diffuser { width_m: f64, height_m: f64 },
+}
+
+fn parse_lined_fit(s: Option<&str>) -> Result<LinedFit, String> {
+    match s {
+        None | Some("reynolds_bevirt") => Ok(LinedFit::ReynoldsBevirt),
+        Some("ari885") => Ok(LinedFit::Ari885),
+        Some(other) => Err(format!("unknown lined_fit: {other}")),
+    }
 }
 
 fn parse_source_type(s: &str) -> Result<SourceType, String> {
@@ -402,6 +414,7 @@ pub fn evaluate(params_js: JsValue) -> Result<JsValue, JsValue> {
     let source_type = parse_source_type(&input.source_type)
         .map_err(|e| JsValue::from_str(&e))?;
     let source_type_label = input.source_type;
+    let lined_fit = parse_lined_fit(input.lined_fit.as_deref()).map_err(|e| JsValue::from_str(&e))?;
     let params = Params {
         source_type,
         source_offset_db: input.source_offset_db,
@@ -409,6 +422,7 @@ pub fn evaluate(params_js: JsValue) -> Result<JsValue, JsValue> {
         room_volume_m3: input.room_volume_m3,
         receiver_distance_m: input.receiver_distance_m,
         blocks: input.blocks.into_iter().map(InputBlock::into_params).collect(),
+        lined_fit,
     };
     let out = evaluate_params(source_type_label, params);
     serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&format!("{e}")))

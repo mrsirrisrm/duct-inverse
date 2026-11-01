@@ -31,7 +31,7 @@ use crate::physics::{
     attenuator::attenuator_il,
     db_add,
     elbow::{elbow_loss_db, ElbowKind},
-    duct_attenuation::segment_attenuation_db,
+    duct_attenuation::{segment_attenuation_db, LinedFit},
     end_reflection::{effective_diameter_rectangular, end_reflection_loss_db, Termination},
     branch::{branch_change_db, cut_on_hz, Outlets},
     plenum::{plenum_loss_db, Openings},
@@ -196,6 +196,7 @@ pub enum Block {
         lining_raw: DualN,
         round: bool,
         wrapped: bool,
+        fit: LinedFit,
     },
     Bend {
         log_width: DualN,
@@ -241,7 +242,8 @@ pub enum Block {
 impl Block {
     /// Build a `Block` from linear-space params, tagging each dual variable
     /// at its slot within the block's reserved `MAX_BLOCK_SLOTS`-wide range.
-    pub fn from_params(params: &BlockParams, block_index: usize) -> Self {
+    /// Block `block_index` of `params`, a lined duct's loss by `fit`.
+    pub fn from_params(params: &BlockParams, block_index: usize, fit: LinedFit) -> Self {
         assert!(block_index < MAX_BLOCKS, "too many blocks");
         let base = block_slot_base(block_index);
         let v = |value: f64, offset: usize| DualN::var(value, base + offset);
@@ -260,6 +262,7 @@ impl Block {
                 lining_raw: v(lining_m, 3),
                 round,
                 wrapped,
+                fit,
             },
             BlockParams::Bend { width_m, height_m, kind, lined, round, zeta } => Self::Bend {
                 log_width: v(width_m.ln(), 0),
@@ -330,12 +333,13 @@ impl Block {
                 lining_raw,
                 round,
                 wrapped,
+                fit,
             } => {
                 let length = log_length.exp();
                 let width = log_width.exp();
                 let height = log_height.exp();
                 let lining = lining_raw.max_f(0.0);
-                let loss = segment_attenuation_db(length, width, height, lining, *round, *wrapped);
+                let loss = segment_attenuation_db(length, width, height, lining, *round, *wrapped, *fit);
                 sub_bands(pwl_in, &loss)
             }
             Self::Bend {
@@ -429,6 +433,8 @@ pub struct Params {
     pub room_volume_m3: f64,
     pub receiver_distance_m: f64,
     pub blocks: Vec<BlockParams>,
+    /// Which published fit gives lined ducts' loss.
+    pub lined_fit: LinedFit,
 }
 
 impl Params {
@@ -440,6 +446,7 @@ impl Params {
             volume_flow_m3s: 0.25,
             room_volume_m3: 50.0,
             receiver_distance_m: 2.0,
+            lined_fit: LinedFit::default(),
             blocks: vec![
                 BlockParams::Segment {
                     length_m: 3.0,
@@ -495,7 +502,7 @@ impl DuctSystem {
             .blocks
             .iter()
             .enumerate()
-            .map(|(i, bp)| Block::from_params(bp, i))
+            .map(|(i, bp)| Block::from_params(bp, i, p.lined_fit))
             .collect();
         Self {
             source_type: p.source_type,
@@ -632,6 +639,7 @@ mod tests {
             volume_flow_m3s: 0.3,
             room_volume_m3: 40.0,
             receiver_distance_m: 2.5,
+            lined_fit: LinedFit::default(),
             blocks: vec![
                 BlockParams::Segment {
                     length_m: 2.0,
@@ -688,6 +696,7 @@ mod tests {
             volume_flow_m3s: 0.2,
             room_volume_m3: 50.0,
             receiver_distance_m: 2.0,
+            lined_fit: LinedFit::default(),
             blocks,
         };
         let diffuser = BlockParams::Diffuser { width_m: 20.0, height_m: 20.0, round: false, lw_db: None, termination: Termination::Flush };

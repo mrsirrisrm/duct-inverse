@@ -42,7 +42,7 @@ fn main() {
     let mut add = |loss: &dyn Fn(usize) -> f64| (0..N_BANDS).for_each(|i| il[i] += loss(i));
 
     for (name, l, w, h, round, tm) in LINED_RUNS {
-        let e = segment_attenuation_db(c(l * FT), c(w * IN), c(h * IN), c(IN), round, false);
+        let e = segment_attenuation_db(c(l * FT), c(w * IN), c(h * IN), c(IN), round, false, Default::default());
         println!("{name}, 1 in lining{}", if round { " (engine: as unlined)" } else { "" });
         row("  TM", |i| tm[i]);
         row("  engine", |i| e[i].value);

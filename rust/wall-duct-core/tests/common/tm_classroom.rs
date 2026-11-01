@@ -93,6 +93,7 @@ pub fn params(diffuser_lw: Option<[f64; 8]>) -> Params {
         volume_flow_m3s: 12_000.0 * CFM,
         room_volume_m3: ROOM_FT3 * FT.powi(3),
         receiver_distance_m: RECEIVER_FT * FT,
+        lined_fit: Default::default(),
         blocks: vec![
             elbow(24.0, 60.0),
             lined(20.0, 24.0, 60.0, false),

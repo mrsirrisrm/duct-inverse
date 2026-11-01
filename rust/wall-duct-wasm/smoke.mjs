@@ -35,4 +35,18 @@ if (out.nc !== 23) {
   console.error(`FAIL: expected NC=23, got ${out.nc}`);
   process.exit(1);
 }
+
+// ARI 885's lined fit (CIBSE Guide B) changes the lined segment's loss; an
+// unknown fit is refused.
+const ari = evaluate({ ...demo, lined_fit: "ari885" });
+console.log("NC with ARI 885 lining:", ari.nc, ari.receiver_spl_bands.map(b => b.spl_db));
+if (ari.receiver_spl_bands.every((b, i) => b.spl_db === out.receiver_spl_bands[i].spl_db)) {
+  console.error("FAIL: lined_fit ari885 changed nothing");
+  process.exit(1);
+}
+try {
+  evaluate({ ...demo, lined_fit: "nope" });
+  console.error("FAIL: unknown lined_fit accepted");
+  process.exit(1);
+} catch (e) {}
 console.log("OK");

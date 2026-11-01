@@ -68,6 +68,7 @@ pub fn params() -> Params {
         volume_flow_m3s: FLOW_M3S,
         room_volume_m3: ROOM_M3,
         receiver_distance_m: RECEIVER_M,
+        lined_fit: Default::default(),
         blocks: vec![
             duct(RUNS[0]),
             branch(BRANCHES[0], 0.9, 0.75),

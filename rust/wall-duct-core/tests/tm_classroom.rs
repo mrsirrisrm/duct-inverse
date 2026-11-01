@@ -8,7 +8,7 @@ use wall_duct_core::autodiff::Dual;
 use wall_duct_core::metrics::octave::N_BANDS;
 use wall_duct_core::model::DuctSystem;
 use wall_duct_core::physics::{
-    duct_attenuation::segment_attenuation_db,
+    duct_attenuation::{segment_attenuation_db, LinedFit},
     elbow::{elbow_loss_db, ElbowKind},
     room::receiver_spl,
 };
@@ -25,7 +25,7 @@ fn within(what: &str, got: f64, tm: f64, tol: f64) {
 fn lined_runs() {
     let c = D::constant;
     for (name, l, w, h, round, tm) in LINED_RUNS.into_iter().filter(|r| !r.4) {
-        let loss = segment_attenuation_db(c(l * FT), c(w * IN), c(h * IN), c(IN), round, false);
+        let loss = segment_attenuation_db(c(l * FT), c(w * IN), c(h * IN), c(IN), round, false, LinedFit::ReynoldsBevirt);
         let bands = if w * h > 1000.0 { 3 } else { 7 };
         (0..bands).for_each(|i| within(&format!("{name}, band {i}"), loss[i].value, tm[i], 4.0));
     }
@@ -78,4 +78,18 @@ fn full_path_with_estimated_diffuser() {
     let pinned = [51.1, 50.1, 36.8, 35.9, 34.6, 28.8, 22.8];
     (0..7).for_each(|i| within(&format!("Lp, band {i}"), spl[i], pinned[i], 0.1));
     assert_eq!(sys.nc(), 34);
+}
+
+/// With ARI 885's lined-duct fit (CIBSE Guide B) for Reynolds & Bevirt's,
+/// 125 Hz comes 1.2 dB nearer TM's 47 and the room rates NC 32. Pinned.
+#[test]
+fn full_path_with_ari_lining() {
+    let mut p = params(Some(DIFFUSER_LW));
+    p.lined_fit = LinedFit::Ari885;
+    let sys = DuctSystem::from_params(&p);
+    let spl = sys.receiver_spl_values();
+    (0..7).for_each(|i| within(&format!("Lp vs TM, band {i}"), spl[i], LP_ONE_TM[i], 3.5));
+    let pinned = [51.2, 48.9, 35.2, 24.5, 28.3, 27.4, 10.5];
+    (0..7).for_each(|i| within(&format!("Lp, band {i}"), spl[i], pinned[i], 0.1));
+    assert_eq!(sys.nc(), 32);
 }

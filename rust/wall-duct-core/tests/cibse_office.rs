@@ -27,7 +27,7 @@ fn within(what: &str, got: f64, guide: f64, tol: f64) {
 fn unlined_runs() {
     let c = D::constant;
     for (name, l, w, h, guide) in RUNS {
-        let loss = segment_attenuation_db(c(l), c(w), c(h), c(0.0), false, false);
+        let loss = segment_attenuation_db(c(l), c(w), c(h), c(0.0), false, false, Default::default());
         (0..N_BANDS).for_each(|i| within(&format!("{name}, band {i}"), loss[i].value, guide[i], 1.5));
     }
 }

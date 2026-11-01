@@ -162,6 +162,7 @@ pub fn analyse_bytes(
         volume_flow_m3s: q_unit,
         room_volume_m3,
         receiver_distance_m,
+        lined_fit: Default::default(),
         blocks: mapped.iter().map(|m| m.block).collect(),
     };
     // Every terminal the unit serves, its power into its room: each division
@@ -216,7 +217,7 @@ pub fn analyse_bytes(
                 let space = location.and_then(|p| ifc::space_at(&spaces, p));
                 if let (Some(location), Some(space), true) = (location, space, seen.insert(m.element)) {
                     let c = Dual::<1>::constant;
-                    let per_m = segment_attenuation_db(c(1.0), c(width_m), c(height_m), c(lining_m), round, wrapped).map(|b| b.value);
+                    let per_m = segment_attenuation_db(c(1.0), c(width_m), c(height_m), c(lining_m), round, wrapped, Default::default()).map(|b| b.value);
                     let run = Run { width_m, height_m, round, length_m, wall_kg_m2: DUCT_WALL_KG_M2 };
                     let radiated = radiated_pwl_db(&pwl.map(|b| b.value), &run, &per_m);
                     let ceiling = CEILING.transfer_db();

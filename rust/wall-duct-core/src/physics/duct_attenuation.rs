@@ -8,6 +8,10 @@
 //!   inches, but never less than the unlined duct loses: at 63 Hz the lining
 //!   adds little to the walls' own loss. TM 5-805-4's worked example (§7-6)
 //!   is within ~3 dB for its 12 x 16 and 12 x 24 in runs.
+//! - **Lined rectangular, ARI 885** (1998, as CIBSE Guide B equation
+//!   5.A2.16 and table 5.A2.3 give it): the same form, `10^A (P/A)^B t^C`,
+//!   125 Hz to 8 kHz; it gives no 63 Hz figure, where the duct is taken as
+//!   unlined. From 2 kHz up the lining's thickness does not enter.
 //! - **Wrapped**: a rectangular duct with external glass fibre insulation
 //!   loses twice the unlined figures (TM 5-805-4, table 7-2's note).
 //! - **Round** (ASHRAE's table for straight round duct, by diameter range):
@@ -23,6 +27,33 @@ use crate::metrics::octave::{N_BANDS, OCTAVE_BANDS_HZ};
 const RB_B: [f64; N_BANDS] = [0.0133, 0.0574, 0.271, 1.0147, 1.770, 1.392, 1.518, 1.581];
 const RB_C: [f64; N_BANDS] = [1.959, 1.410, 0.824, 0.500, 0.695, 0.802, 0.451, 0.219];
 const RB_D: [f64; N_BANDS] = [0.917, 0.941, 1.079, 0.854, 0.602, 0.389, 0.208, 0.121];
+
+/// ARI 885 lined rectangular duct, CIBSE Guide B table 5.A2.3, 125 Hz to
+/// 8 kHz: A (as 10^A), B, C.
+const ARI_A: [f64; N_BANDS - 1] = [-0.865, -0.582, -0.0121, 0.298, 0.089, 0.0649, 0.150];
+const ARI_B: [f64; N_BANDS - 1] = [0.723, 0.826, 0.487, 0.513, 0.862, 0.629, 0.166];
+const ARI_C: [f64; N_BANDS - 1] = [0.375, 0.975, 0.868, 0.317, 0.0, 0.0, 0.0];
+
+/// Which published fit gives a lined rectangular duct's loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LinedFit {
+    /// Reynolds & Bevirt, as ASHRAE gives it.
+    #[default]
+    ReynoldsBevirt,
+    /// ARI 885, as CIBSE Guide B gives it.
+    Ari885,
+}
+
+impl LinedFit {
+    /// Coefficient, P/A exponent and thickness exponent at band `i` (P/A in
+    /// 1/ft, thickness in inches, dB/ft), or `None` where the fit has none.
+    fn coefficients(self, i: usize) -> Option<(f64, f64, f64)> {
+        match self {
+            Self::ReynoldsBevirt => Some((RB_B[i], RB_C[i], RB_D[i])),
+            Self::Ari885 => i.checked_sub(1).map(|k| (10f64.powf(ARI_A[k]), ARI_B[k], ARI_C[k])),
+        }
+    }
+}
 
 /// ASHRAE straight round duct, dB/ft, 63 Hz to 8 kHz (8 kHz as 4 kHz), for
 /// diameters up to 7, 15, 30 and 60 in.
@@ -61,12 +92,13 @@ pub fn rectangular_pa<const N: usize>(
 }
 
 /// Per-metre attenuation of a rectangular duct at each of the 8 octave
-/// bands, `wrapped` if insulated outside.
+/// bands, `wrapped` if insulated outside, a lining's by `fit`.
 pub fn attenuation_db_per_m<const N: usize>(
     width_m: Dual<N>,
     height_m: Dual<N>,
     lining_thickness_m: Dual<N>,
     wrapped: bool,
+    fit: LinedFit,
 ) -> [Dual<N>; N_BANDS] {
     let pa = rectangular_pa(width_m, height_m) / FT_PER_M;
     // The fit is for linings of 1 to 2 in, and t^D is steep at 0: below
@@ -74,10 +106,10 @@ pub fn attenuation_db_per_m<const N: usize>(
     // bare duct is the unlined one.
     let t_in = (lining_thickness_m * IN_PER_M).max_f(0.0);
     std::array::from_fn(|i| {
-        let lined = if t_in.value < RAMP_IN {
-            pow(pa, RB_C[i]) * (RAMP_IN.powf(RB_D[i]) * RB_B[i] / RAMP_IN) * t_in
-        } else {
-            pow(pa, RB_C[i]) * pow(t_in, RB_D[i]) * RB_B[i]
+        let lined = match fit.coefficients(i) {
+            None => Dual::constant(0.0),
+            Some((b, c, d)) if t_in.value < RAMP_IN => pow(pa, c) * (RAMP_IN.powf(d) * b / RAMP_IN) * t_in,
+            Some((b, c, d)) => pow(pa, c) * pow(t_in, d) * b,
         };
         let unlined = unlined_db_per_ft(pa, OCTAVE_BANDS_HZ[i]) * if wrapped { 2.0 } else { 1.0 };
         (if lined.value > unlined.value { lined } else { unlined }) * FT_PER_M
@@ -93,7 +125,8 @@ pub fn round_db_per_m(diameter_m: f64) -> [f64; N_BANDS] {
 
 /// Total attenuation of a duct segment of given length: rectangular
 /// `width_m` x `height_m`, or round of diameter `width_m`; `wrapped` if
-/// insulated outside, which the round duct's figures do not take.
+/// insulated outside, which the round duct's figures do not take; a
+/// rectangular one's lining by `fit`.
 pub fn segment_attenuation_db<const N: usize>(
     length_m: Dual<N>,
     width_m: Dual<N>,
@@ -101,17 +134,36 @@ pub fn segment_attenuation_db<const N: usize>(
     lining_thickness_m: Dual<N>,
     round: bool,
     wrapped: bool,
+    fit: LinedFit,
 ) -> [Dual<N>; N_BANDS] {
     if round {
         return round_db_per_m(width_m.value).map(|per_m| length_m * per_m);
     }
-    attenuation_db_per_m(width_m, height_m, lining_thickness_m, wrapped).map(|per_m| per_m * length_m)
+    attenuation_db_per_m(width_m, height_m, lining_thickness_m, wrapped, fit).map(|per_m| per_m * length_m)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    /// ARI 885, CIBSE Guide B equation 5.A2.16: 12 x 16 in (P/A 3.5 /ft),
+    /// 1 in lining, 1 kHz: 10^0.298 · 3.5^0.513 = 3.78 dB/ft, 12.39 dB/m.
+    /// No 63 Hz figure: the bare duct's there. From 2 kHz the lining's
+    /// thickness does not enter.
+    #[test]
+    fn ari_885_by_hand() {
+        let c = Dual::<1>::constant;
+        let (w, h) = (c(12.0 * IN), c(16.0 * IN));
+        let ari = |t: f64| attenuation_db_per_m(w, h, c(t), false, LinedFit::Ari885);
+        let one_inch = ari(IN);
+        assert_relative_eq!(one_inch[4].value, 10f64.powf(0.298) * 3.5f64.powf(0.513) * FT_PER_M, max_relative = 1e-6);
+        assert_relative_eq!(one_inch[4].value, 12.39, epsilon = 0.01);
+        assert_relative_eq!(one_inch[0].value, attenuation_db_per_m(w, h, c(0.0), false, LinedFit::Ari885)[0].value, max_relative = 1e-12);
+        let two_inch = ari(2.0 * IN);
+        (5..N_BANDS).for_each(|i| assert_relative_eq!(two_inch[i].value, one_inch[i].value, max_relative = 1e-12));
+        assert!(two_inch[3].value > one_inch[3].value);
+    }
 
     const IN: f64 = 0.0254;
 
@@ -120,7 +172,7 @@ mod tests {
     #[test]
     fn lined_regime_matches_formula() {
         let c = Dual::<1>::constant;
-        let per_m = attenuation_db_per_m(c(12.0 * IN), c(16.0 * IN), c(IN), false);
+        let per_m = attenuation_db_per_m(c(12.0 * IN), c(16.0 * IN), c(IN), false, LinedFit::ReynoldsBevirt);
         for i in 1..N_BANDS {
             let expected = RB_B[i] * 3.5f64.powf(RB_C[i]) * FT_PER_M;
             assert_relative_eq!(per_m[i].value, expected, max_relative = 1e-4);
@@ -133,7 +185,7 @@ mod tests {
     fn lined_never_below_unlined() {
         let c = Dual::<1>::constant;
         let (w, h) = (c(12.0 * IN), c(16.0 * IN));
-        let (lined, bare) = (attenuation_db_per_m(w, h, c(IN), false), attenuation_db_per_m(w, h, c(0.0), false));
+        let (lined, bare) = (attenuation_db_per_m(w, h, c(IN), false, LinedFit::ReynoldsBevirt), attenuation_db_per_m(w, h, c(0.0), false, LinedFit::ReynoldsBevirt));
         assert_eq!(lined[0].value, bare[0].value);
         assert!((0..N_BANDS).all(|i| lined[i].value >= bare[i].value));
     }
@@ -145,7 +197,7 @@ mod tests {
     fn unlined_regime_matches_ashrae() {
         let w = Dual::<1>::constant(0.6096);
         let t = Dual::<1>::constant(0.0);
-        let per_m = attenuation_db_per_m(w, w, t, false);
+        let per_m = attenuation_db_per_m(w, w, t, false, LinedFit::ReynoldsBevirt);
         let expected = |i: usize| match i {
             0 => 1.64 * 2f64.powf(0.73) * 63f64.powf(-0.58),
             1 => 1.64 * 2f64.powf(0.73) * 125f64.powf(-0.58),
@@ -164,8 +216,8 @@ mod tests {
         let h = Dual::<1>::constant(0.3);
         let t1 = Dual::<1>::constant(0.025);
         let t2 = Dual::<1>::constant(0.050);
-        let a1 = attenuation_db_per_m(w, h, t1, false);
-        let a2 = attenuation_db_per_m(w, h, t2, false);
+        let a1 = attenuation_db_per_m(w, h, t1, false, LinedFit::ReynoldsBevirt);
+        let a2 = attenuation_db_per_m(w, h, t2, false, LinedFit::ReynoldsBevirt);
         // 500 Hz, 1 kHz should rise.
         assert!(a2[3].value > a1[3].value);
         assert!(a2[4].value > a1[4].value);
@@ -177,8 +229,8 @@ mod tests {
     fn round_duct_loses_little() {
         let c = Dual::<1>::constant;
         let d = c(10.0 * IN);
-        let round = segment_attenuation_db(c(1.0 / FT_PER_M), d, d, c(0.0), true, false);
-        let square = segment_attenuation_db(c(1.0 / FT_PER_M), d, d, c(0.0), false, false);
+        let round = segment_attenuation_db(c(1.0 / FT_PER_M), d, d, c(0.0), true, false, LinedFit::ReynoldsBevirt);
+        let square = segment_attenuation_db(c(1.0 / FT_PER_M), d, d, c(0.0), false, false, LinedFit::ReynoldsBevirt);
         assert_relative_eq!(round[0].value, 0.03, max_relative = 1e-9);
         assert!(square[0].value > 10.0 * round[0].value);
     }
@@ -189,12 +241,12 @@ mod tests {
     fn external_wrap_doubles_the_bare_duct() {
         let c = Dual::<1>::constant;
         let (w, h) = (c(0.6), c(0.3));
-        let (bare, wrapped) = (attenuation_db_per_m(w, h, c(0.0), false), attenuation_db_per_m(w, h, c(0.0), true));
+        let (bare, wrapped) = (attenuation_db_per_m(w, h, c(0.0), false, LinedFit::ReynoldsBevirt), attenuation_db_per_m(w, h, c(0.0), true, LinedFit::ReynoldsBevirt));
         (0..N_BANDS).for_each(|i| assert_relative_eq!(wrapped[i].value, 2.0 * bare[i].value, max_relative = 1e-12));
-        let lined = attenuation_db_per_m(w, h, c(0.025), true);
+        let lined = attenuation_db_per_m(w, h, c(0.025), true, LinedFit::ReynoldsBevirt);
         assert!((0..N_BANDS).all(|i| lined[i].value >= wrapped[i].value));
         let d = c(0.3);
-        let round = |wrap| segment_attenuation_db(c(1.0), d, d, c(0.0), true, wrap)[0].value;
+        let round = |wrap| segment_attenuation_db(c(1.0), d, d, c(0.0), true, wrap, LinedFit::ReynoldsBevirt)[0].value;
         assert_eq!(round(true), round(false));
     }
 }
