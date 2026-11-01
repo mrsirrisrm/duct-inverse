@@ -390,7 +390,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 [[package]]
 name = "rvt"
 version = "0.12.0"
-source = "git+https://github.com/mrsirrisrm/rvt-rs?rev=ac6f8bf22b16b2cd0749de92e71916292c0d2b82#ac6f8bf22b16b2cd0749de92e71916292c0d2b82"
+source = "git+https://github.com/mrsirrisrm/rvt-rs?rev=4226cf1c764c9bc436203500f6bacfed0cacec74#4226cf1c764c9bc436203500f6bacfed0cacec74"
 dependencies = [
  "anyhow",
  "cfb",

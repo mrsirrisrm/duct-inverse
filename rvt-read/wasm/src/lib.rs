@@ -139,6 +139,20 @@ pub fn analyse_bytes(
     let takeoffs = heal::join_takeoffs(&mut net);
     let healed = connectivity(&net);
     let heal_ms = lap();
+    // Rooms from the IFC's spaces, in its coordinates; else from the Revit
+    // model's, in its own.
+    let revit_rooms = spaces.is_empty() && !net.spaces.is_empty();
+    if revit_rooms {
+        spaces = net.spaces.clone();
+    }
+    let locate = |n: usize| {
+        let node = &net.nodes[n];
+        match node.kind {
+            _ if !revit_rooms => node.ifc.as_ref().and_then(|i| i.location),
+            NodeKind::Duct { start, end, .. } => Some(std::array::from_fn(|k| (start[k] + end[k]) / 2.0)),
+            _ => node.location,
+        }
+    };
 
     let Some(cp) = path::critical_path(&net) else {
         return Ok(json!({ "recorded": recorded, "ifc": ifc, "healed": healed, "classified": classified(&net), "path": null }));
@@ -195,7 +209,7 @@ pub fn analyse_bytes(
         .iter()
         .map(|(t, _, mapped)| {
             let sys = DuctSystem::from_params(&params(mapped, rooms::DEFAULT_ROOM_M3, rooms::DEFAULT_RECEIVER_M));
-            let location = net.nodes[*t].ifc.as_ref().and_then(|i| i.location);
+            let location = locate(*t);
             rooms::Terminal {
                 pwl: sys.diffuser_pwl().map(|b| b.value),
                 location,
@@ -213,7 +227,7 @@ pub fn analyse_bytes(
         for (block, m) in sys.blocks.iter().zip(mapped) {
             q = block.flow_out(q);
             if let BlockParams::Segment { length_m, width_m, height_m, lining_m, round, wrapped } = m.block {
-                let location = net.find(m.element).and_then(|n| net.nodes[n].ifc.as_ref()).and_then(|i| i.location);
+                let location = net.find(m.element).and_then(locate);
                 let space = location.and_then(|p| ifc::space_at(&spaces, p));
                 if let (Some(location), Some(space), true) = (location, space, seen.insert(m.element)) {
                     let c = Dual::<1>::constant;
@@ -342,7 +356,8 @@ pub fn analyse_bytes(
         "rooms": rated.iter().take(20).map(&room_json).collect::<Vec<_>>(),
         "assumptions": [
             if source.is_some() { "source: the unit's sound power as given" } else { "source: a forward-curved fan at the unit's flow and 250 Pa (no sound data given)" },
-            "rooms from the IFC's spaces, their volume their extent's; a receiver at 1.2 m under each diffuser, every diffuser in the room reaching it by Schultz's equation (a normally furnished room) at its distance; the room rated at its worst receiver",
+            if revit_rooms { "rooms from the Revit model's MEP spaces, their volume their extent's" } else { "rooms from the IFC's spaces, their volume their extent's" },
+            "rooms: a receiver at 1.2 m under each diffuser, every diffuser in the room reaching it by Schultz's equation (a normally furnished room) at its distance; the room rated at its worst receiver",
             "a terminal in no space: rated alone, in 50 m3 at 2 m",
             "breakout: each straight on a rated path over a room radiates through its walls (ASHRAE 1991, 0.8 mm galvanised steel) and a fibreglass tile ceiling (TM 5-805-4 table 7-1), from its midpoint",
             "ducts lined where the Revit model lines them (Reynolds and Bevirt), bends too (TM 5-805-4 table 7-6), else unlined; round where the IFC profile or the type name says so; a rectangular one insulated outside (a Revit insulation or an IFC covering) loses twice the bare figures (TM 5-805-4); transitions not modelled",

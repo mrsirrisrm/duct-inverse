@@ -27,7 +27,7 @@ pub fn network(bytes: Vec<u8>, progress: &rvt::control::WalkerControl) -> Result
 }
 
 /// [`network`], calling `lap` with each stage's name as it finishes
-/// ("walk", "parameters", "build", "covers"), for timing.
+/// ("walk", "parameters", "build", "covers", "spaces"), for timing.
 pub fn network_with_laps(
     bytes: Vec<u8>,
     progress: &rvt::control::WalkerControl,
@@ -55,6 +55,8 @@ pub fn network_with_laps(
     lap("build");
     covers(&mut file, &mut net);
     lap("covers");
+    net.spaces = spaces(&mut file);
+    lap("spaces");
     Ok(net)
 }
 
@@ -75,4 +77,18 @@ fn covers(file: &mut RevitFile, net: &mut Network) {
             _ => {}
         }
     }
+}
+
+/// The MEP spaces, named by number and name.
+fn spaces(file: &mut RevitFile) -> Vec<crate::ifc::IfcSpace> {
+    let m = |v: f64| v * build::FT;
+    rvt::elements::spaces::spaces_lossy(file)
+        .value
+        .into_iter()
+        .map(|s| {
+            let b = s.bbox_feet;
+            let name = [s.number, s.name].into_iter().flatten().collect::<Vec<_>>().join(" ");
+            crate::ifc::IfcSpace { name, min: [m(b[0]), m(b[1]), m(b[2])], max: [m(b[3]), m(b[4]), m(b[5])] }
+        })
+        .collect()
 }

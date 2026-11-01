@@ -84,6 +84,8 @@ pub struct Network {
     /// What the Revit model says covers each element, by id: an element an
     /// IFC adds later has its covers too.
     pub covers: HashMap<i64, Covers>,
+    /// The Revit model's MEP spaces, in its coordinates, metres.
+    pub spaces: Vec<crate::ifc::IfcSpace>,
 }
 
 impl Network {
