@@ -15,7 +15,7 @@ path = "src/main.rs"
 serde_json = "1"
 # Read Revit files directly. Pinned: rvt-rs is pre-1.0 and its element
 # fields are what `build` matches on.
-rvt = { git = "https://github.com/DrunkOnJava/rvt-rs", rev = "e5846fe79517b036b3524639237ab0c9cab4d08f", optional = true }
+rvt = { git = "https://github.com/mrsirrisrm/rvt-rs", rev = "ac6f8bf22b16b2cd0749de92e71916292c0d2b82", optional = true }
 
 [features]
 rvt = ["dep:rvt"]

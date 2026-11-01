@@ -409,8 +409,8 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rvt"
-version = "0.10.0"
-source = "git+https://github.com/DrunkOnJava/rvt-rs?rev=e5846fe79517b036b3524639237ab0c9cab4d08f#e5846fe79517b036b3524639237ab0c9cab4d08f"
+version = "0.12.0"
+source = "git+https://github.com/mrsirrisrm/rvt-rs?rev=ac6f8bf22b16b2cd0749de92e71916292c0d2b82#ac6f8bf22b16b2cd0749de92e71916292c0d2b82"
 dependencies = [
  "anyhow",
  "cfb",
