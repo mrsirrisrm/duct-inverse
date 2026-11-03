@@ -59,6 +59,39 @@ fn clock_ms() -> f64 {
 
 /// Rule coverage over the fittings, terminals and equipment, by element, and
 /// the distinct names the rules left: the classifier's queue.
+/// What in the model stops it being rated as it stands, for the engineer to
+/// check: each issue's kind, the elements it is about, what is wrong and
+/// what to look at.
+fn issues(net: &Network) -> Vec<Value> {
+    path::overfed(net)
+        .into_iter()
+        .map(|o| {
+            let unit = &net.nodes[o.unit];
+            let joins: Vec<Value> = o
+                .healed_joins
+                .iter()
+                .take(5)
+                .map(|&(a, b, q)| json!({ "from": net.nodes[a].id, "to": net.nodes[b].id, "beyond_l_s": (q * 1000.0).round() }))
+                .collect();
+            json!({
+                "kind": "unit_overfed",
+                "severity": "error",
+                "elements": [unit.id],
+                "message": format!(
+                    "unit {} ({}) is rated {:.0} L/s, but the {} terminals its ductwork reaches take {:.0} L/s: its network is joined to air it cannot supply, so it is not rated",
+                    unit.id, unit.family, o.rated * 1000.0, o.system, o.served * 1000.0
+                ),
+                "check": if joins.is_empty() {
+                    "the unit's Air Flow, and where its ductwork meets another unit's".to_string()
+                } else {
+                    "these joins, found from the geometry, not the model's connectors; the one carrying the extra air should not be there, or another unit should feed what lies beyond it".to_string()
+                },
+                "joins": joins,
+            })
+        })
+        .collect()
+}
+
 fn classified(net: &Network) -> Value {
     let mut left = std::collections::BTreeMap::<(&str, &str), usize>::new();
     let (mut total, mut named) = (0, 0);
@@ -154,19 +187,23 @@ pub fn analyse_bytes(
         }
     };
 
+    let mut issues = issues(&net);
     let Some(cp) = path::critical_path(&net) else {
-        return Ok(json!({ "recorded": recorded, "ifc": ifc, "healed": healed, "classified": classified(&net), "path": null }));
+        return Ok(json!({ "recorded": recorded, "ifc": ifc, "healed": healed, "classified": classified(&net), "issues": issues, "path": null }));
     };
     let unit = &net.nodes[cp.tree.root];
     let q_unit = cp.flow[cp.tree.root];
-    if let Some(rated) = unit.flow.filter(|&r| (r - q_unit).abs() > 0.05 * q_unit) {
-        warnings.push(format!(
-            "unit {} Air Flow is {:.0} L/s; its {} terminals sum to {:.0} L/s",
-            unit.id,
-            rated * 1000.0,
-            cp.system,
-            q_unit * 1000.0
-        ));
+    if let Some(rated) = unit.flow.filter(|&r| r > 0.0 && (r - q_unit).abs() > 0.05 * q_unit) {
+        issues.push(json!({
+            "kind": "unit_flow_mismatch",
+            "severity": "warning",
+            "elements": [unit.id],
+            "message": format!(
+                "unit {} Air Flow is {:.0} L/s; its {} terminals sum to {:.0} L/s, which the rating uses",
+                unit.id, rated * 1000.0, cp.system, q_unit * 1000.0
+            ),
+            "check": "the unit's Air Flow and its terminals' design flows",
+        }));
     }
     // No sound data in the model; without the unit's own, an estimate from its flow.
     let lw = source.unwrap_or_else(|| fan_estimate(q_unit));
@@ -334,6 +371,7 @@ pub fn analyse_bytes(
         "takeoffs": { "found": takeoffs.takeoffs, "joined": takeoffs.joined, "ambiguous": takeoffs.ambiguous, "unmatched": takeoffs.unmatched },
         "healed": healed,
         "classified": classified(&net),
+        "issues": issues,
         "path": {
             "unit": { "id": unit.id, "family": unit.family, "air_flow_l_s": unit.flow.map(|q| q * 1000.0) },
             "system": cp.system,

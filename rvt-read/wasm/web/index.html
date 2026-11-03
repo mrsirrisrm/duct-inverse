@@ -41,10 +41,14 @@ worker.onmessage = ({ data }) => {
   // ?beacon reports the timing to the serving host, for runs nobody watches.
   if (params.has('beacon')) fetch(`/beacon?run=${++runs}&ms=${ms}&t=${encodeURIComponent(JSON.stringify(r.timings_ms))}&mem=${wasmMemoryMB}&nc=${r.path?.nc}`).catch(() => {});
   const p = r.path;
-  if (!p) { out.textContent = 'no supply path found'; return; }
+  // What the engineer has to check before trusting the rating, first.
+  const issue = i => `<li><b>${i.severity}</b> ${i.message}. Check ${i.check}${(i.joins ?? []).length
+    ? ': ' + i.joins.map(j => `${j.from}–${j.to} (${j.beyond_l_s} L/s beyond)`).join(', ') : ''}.</li>`;
+  const issues = (r.issues ?? []).length ? `<ul>${r.issues.map(issue).join('')}</ul>` : '';
+  if (!p) { out.innerHTML = `${issues}<p>no supply path found</p>`; return; }
   const row = b => `<tr><td>${b.index}</td><td>${b.type} ${b.note}</td><td>${b.flow_l_s.toFixed(0)}</td>`
     + `<td>${b.velocity_m_s?.toFixed(1) ?? ''}</td>${b.lw_db.map(v => `<td>${v.toFixed(1)}</td>`).join('')}</tr>`;
-  out.innerHTML = `
+  out.innerHTML = `${issues}
     <p>Islands ${r.recorded.islands} → ${r.healed.islands}; terminals reaching a unit
       ${r.recorded.terminals_with_equipment} → ${r.healed.terminals_with_equipment} of ${r.healed.terminals}.
       ${r.ifc ? `IFC: ${r.ifc.matched} elements matched, ${r.ifc.duct_geometry} ducts given geometry, ${r.ifc.added} added, ${r.ifc.ports} port joins, ${r.ifc.joined_inside} ends-inside joins, ${r.ifc.spaces} spaces.` : ''}</p>
