@@ -51,6 +51,15 @@ pub struct RoomRating {
     /// energy.
     pub breakout_runs: usize,
     pub breakout_share: f64,
+    /// What reaches the worst receiver, each part's level there.
+    pub parts: Vec<(Part, [f64; N_BANDS])>,
+}
+
+/// A part of what a receiver hears: a terminal's or a source's, by index.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Part {
+    Terminal(usize),
+    Source(usize),
 }
 
 fn dist(a: Point, b: Point) -> f64 {
@@ -96,12 +105,13 @@ pub fn rate(terminals: &[Terminal], sources: &[Source], spaces: &[IfcSpace]) -> 
                     nc: nc_exact(&spl),
                     breakout_runs: 0,
                     breakout_share: 0.0,
+                    parts: vec![(Part::Terminal(i), spl)],
                 }
             }
             Some(s) => {
                 let room = &spaces[s];
                 let volume = room.volume();
-                let over: Vec<&Source> = sources.iter().filter(|b| b.space == s).collect();
+                let over: Vec<usize> = (0..sources.len()).filter(|&k| sources[k].space == s).collect();
                 let worst = members
                     .iter()
                     .map(|&r| {
@@ -114,18 +124,19 @@ pub fn rate(terminals: &[Terminal], sources: &[Source], spaces: &[IfcSpace]) -> 
                                 (j, at, at_receiver(&terminals[j].pwl, volume, at))
                             })
                             .collect();
-                        let breakout: Vec<[f64; N_BANDS]> = over.iter().map(|b| at_receiver(&b.pwl, volume, dist(b.location, ear))).collect();
+                        let breakout: Vec<[f64; N_BANDS]> = over.iter().map(|&k| at_receiver(&sources[k].pwl, volume, dist(sources[k].location, ear))).collect();
                         let spl: [f64; N_BANDS] = std::array::from_fn(|b| {
                             let e = |l: f64| 10f64.powf(l / 10.0);
                             10.0 * (parts.iter().map(|p| e(p.2[b])).sum::<f64>() + breakout.iter().map(|x| e(x[b])).sum::<f64>()).log10()
                         });
                         let (dominant, at, _) = *parts.iter().max_by(|a, b| energy(&a.2).total_cmp(&energy(&b.2))).unwrap();
                         let share = breakout.iter().map(energy).sum::<f64>() / energy(&spl);
-                        (r, dominant, at, spl, share)
+                        let heard = parts.iter().map(|p| (Part::Terminal(p.0), p.2)).chain(over.iter().zip(&breakout).map(|(&k, x)| (Part::Source(k), *x)));
+                        (r, dominant, at, spl, share, heard.collect())
                     })
                     .max_by(|a, b| (nc_exact(&a.3), energy(&a.3)).partial_cmp(&(nc_exact(&b.3), energy(&b.3))).unwrap())
                     .unwrap();
-                let (receiver_under, dominant, dominant_distance_m, spl, breakout_share) = worst;
+                let (receiver_under, dominant, dominant_distance_m, spl, breakout_share, parts) = worst;
                 RoomRating {
                     space,
                     terminals: members,
@@ -137,6 +148,7 @@ pub fn rate(terminals: &[Terminal], sources: &[Source], spaces: &[IfcSpace]) -> 
                     nc: nc_exact(&spl),
                     breakout_runs: over.len(),
                     breakout_share,
+                    parts,
                 }
             }
         })
@@ -247,6 +259,7 @@ mod tests {
         let both = rate(&t, &[run, elsewhere], &[room()]).remove(0);
         assert_eq!(both.breakout_runs, 1);
         assert!((both.breakout_share - 0.5).abs() < 1e-9);
+        assert_eq!(both.parts.iter().map(|p| p.0).collect::<Vec<_>>(), [Part::Terminal(0), Part::Source(0)]);
         (0..N_BANDS).for_each(|b| assert!((both.spl[b] - alone.spl[b] - 10.0 * 2f64.log10()).abs() < 1e-9));
     }
 }

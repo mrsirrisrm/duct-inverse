@@ -46,6 +46,9 @@ worker.onmessage = ({ data }) => {
     ? ': ' + i.joins.map(j => `${j.from}–${j.to} (${j.beyond_l_s} L/s beyond)`).join(', ') : ''}.</li>`;
   const issues = (r.issues ?? []).length ? `<ul>${r.issues.map(issue).join('')}</ul>` : '';
   if (!p) { out.innerHTML = `${issues}<p>no supply path found</p>`; return; }
+  // Each element's share of what sets the room's rating.
+  const part = c => `${c.as === 'unit' ? 'unit' : c.as === 'breakout' ? 'breakout from duct' : c.as + ' noise at'} ${c.element} ${(c.share * 100).toFixed(0)}%`;
+  const controls = m => m.controls.parts.length ? `<p>Set at ${m.controls.band_hz} Hz by: ${m.controls.parts.map(part).join(', ')}</p>` : '';
   const row = b => `<tr><td>${b.index}</td><td>${b.type} ${b.note}</td><td>${b.flow_l_s.toFixed(0)}</td>`
     + `<td>${b.velocity_m_s?.toFixed(1) ?? ''}</td>${b.lw_db.map(v => `<td>${v.toFixed(1)}</td>`).join('')}</tr>`;
   out.innerHTML = `${issues}
@@ -54,6 +57,7 @@ worker.onmessage = ({ data }) => {
       ${r.ifc ? `IFC: ${r.ifc.matched} elements matched, ${r.ifc.duct_geometry} ducts given geometry, ${r.ifc.added} added, ${r.ifc.ports} port joins, ${r.ifc.joined_inside} ends-inside joins, ${r.ifc.spaces} spaces.` : ''}</p>
     <p>${p.unit.family} (${p.system}) → ${p.terminal.family}: ${p.elements} elements, ${p.blocks.length} blocks,
       <b>NC ${p.nc}</b> in ${p.room.space ?? 'a stand-in room'} (${p.room.volume_m3} m³, ${p.room.terminals} diffuser${p.room.terminals > 1 ? 's' : ''})</p>
+    ${controls(p.room)}
     ${r.rooms.length > 1 ? `<p>Next: ${r.rooms.slice(1, 6).map(m => `${m.space ?? 'terminal ' + m.dominant.terminal} NC ${m.nc}`).join(', ')}</p>` : ''}
     <table><tr><th>#</th><th>block</th><th>L/s</th><th>m/s</th>${p.bands_hz.map(f => `<th>${f}</th>`).join('')}</tr>
       ${p.blocks.map(row).join('')}

@@ -165,3 +165,34 @@ fn breakout_into_the_room() {
     let lp = |v: &Value| v["path"]["receiver_spl_db"].as_array().unwrap().iter().map(|b| b.as_f64().unwrap()).collect::<Vec<_>>();
     assert!(lp(&over).iter().zip(lp(&above)).all(|(o, a)| o >= &a), "{:?} vs {:?}", lp(&over), lp(&above));
 }
+
+/// What sets the office's rating, at its band nearest its NC curve: the
+/// unit's own noise, its diffusers', and the runs breaking out over it,
+/// largest first. With the unit's sound power estimated and setting the
+/// rating, that is an issue; given it, it is not.
+#[test]
+fn what_sets_the_rating() {
+    let over = analyse_model(true, false, true);
+    let room = &over["path"]["room"];
+    let parts = room["controls"]["parts"].as_array().unwrap();
+    let share = |p: &Value| p["share"].as_f64().unwrap();
+    assert!(parts.windows(2).all(|w| share(&w[0]) >= share(&w[1])), "{parts:?}");
+    assert!(parts.iter().map(share).sum::<f64>() <= 1.001);
+    for p in parts {
+        let element = p["element"].as_i64().unwrap();
+        match p["as"].as_str().unwrap() {
+            "unit" => assert_eq!(element, 300),
+            "breakout" => assert!([310, 320, 330].contains(&element), "{p}"),
+            "diffuser" => assert!([340, 350].contains(&element), "{p}"),
+            "branch" => assert_eq!(element, 310),
+            other => panic!("{other} in {parts:?}"),
+        }
+    }
+    let unit = parts.iter().find(|p| p["as"] == "unit").map_or(0.0, share);
+    let flagged = |r: &Value| r["issues"].as_array().unwrap().iter().any(|i| i["kind"] == "unit_sound_power_estimated");
+    assert_eq!(flagged(&over), unit > 0.5, "unit {unit}");
+
+    let control = rvt::control::WalkerControl::new();
+    let quiet = duct_pipeline::analyse_bytes(None, Some(model(true, false, true).as_bytes()), Some([30.0; 8]), Default::default(), &control).expect("analyse");
+    assert!(!flagged(&quiet));
+}

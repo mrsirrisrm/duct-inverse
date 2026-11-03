@@ -531,6 +531,31 @@ impl DuctSystem {
         pwl
     }
 
+    /// [`Self::diffuser_pwl`] split by where the sound starts: the source
+    /// first, then each block's own noise, each carried through the blocks
+    /// after it. Every block passes power on in proportion and adds its own,
+    /// so the parts' energies sum to the whole.
+    pub fn diffuser_pwl_by_source(&self) -> Vec<[f64; N_BANDS]> {
+        const QUIET: f64 = -300.0;
+        const LOUD: f64 = 300.0;
+        let mut q = self.volume_flow();
+        let mut parts = vec![source_pwl(self.source_type, self.source_offset).map(|b| b.value)];
+        for block in &self.blocks {
+            q = block.flow_out(q);
+            // Its own noise with nothing coming in; what it passes on, with
+            // so much coming in its own is lost in it.
+            let own = block.forward(&[DualN::constant(QUIET); N_BANDS], q);
+            let passed = block.forward(&[DualN::constant(LOUD); N_BANDS], q);
+            for part in &mut parts {
+                for i in 0..N_BANDS {
+                    part[i] += passed[i].value - LOUD;
+                }
+            }
+            parts.push(own.map(|b| b.value));
+        }
+        parts
+    }
+
     pub fn receiver_spl(&self) -> Band {
         receiver_spl(
             &self.diffuser_pwl(),
@@ -707,6 +732,37 @@ mod tests {
             assert_relative_eq!(whole[i].value - half[i].value, 10.0 * 2.0f64.log10(), max_relative = 1e-4);
             assert_relative_eq!(half[i].grad[block_slot_base(0)], 10.0 / std::f64::consts::LN_10, max_relative = 1e-4);
         }
+    }
+
+    /// The parts by source add back to the whole, through a bend, a tee, a
+    /// damper and a diffuser, each of which makes noise of its own.
+    #[test]
+    fn parts_by_source_sum_to_the_whole() {
+        let p = Params {
+            source_type: SourceType::AxialFan,
+            source_offset_db: 0.0,
+            volume_flow_m3s: 0.4,
+            room_volume_m3: 50.0,
+            receiver_distance_m: 2.0,
+            lined_fit: LinedFit::default(),
+            blocks: vec![
+                BlockParams::Segment { length_m: 3.0, width_m: 0.4, height_m: 0.3, lining_m: 0.025, round: false, wrapped: false },
+                BlockParams::Bend { width_m: 0.4, height_m: 0.3, kind: ElbowKind::Mitred, lined: false, round: false, zeta: None },
+                BlockParams::Branch { flow_ratio: 0.5, width_m: 0.4, height_m: 0.3, round: false, outlets: None },
+                BlockParams::Damper { width_m: 0.3, height_m: 0.3, closed_deg: 15.0, round: false },
+                BlockParams::Diffuser { width_m: 0.3, height_m: 0.3, round: false, lw_db: None, termination: Termination::Flush },
+            ],
+        };
+        let sys = DuctSystem::from_params(&p);
+        let (whole, parts) = (sys.diffuser_pwl(), sys.diffuser_pwl_by_source());
+        assert_eq!(parts.len(), 6);
+        for i in 0..N_BANDS {
+            let sum = 10.0 * parts.iter().map(|part| 10f64.powf(part[i] / 10.0)).sum::<f64>().log10();
+            assert_relative_eq!(sum, whole[i].value, epsilon = 1e-9);
+        }
+        // The duct makes none of its own; the others do.
+        assert!(parts[1].iter().all(|&l| l < -200.0));
+        assert!([2, 3, 4, 5].iter().all(|&k| parts[k].iter().any(|&l| l > 0.0)));
     }
 
     /// Woods' damper levels at his three positions, and between.

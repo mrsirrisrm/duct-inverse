@@ -10,6 +10,7 @@ pub mod rooms;
 use duct_heal::classify::{classify_node, ElementType};
 use duct_heal::{graph, heal, ifc, path, rvt_native, Network, NodeKind};
 use serde_json::{json, Value};
+use wall_duct_core::metrics::nc::curve_at;
 use wall_duct_core::metrics::octave::{N_BANDS, OCTAVE_BANDS_HZ};
 use wall_duct_core::model::{BlockParams, DuctSystem, Params, MAX_BLOCKS};
 use wall_duct_core::autodiff::Dual;
@@ -242,10 +243,15 @@ pub fn analyse_bytes(
     if paths.is_empty() {
         return Err(format!("every path from the unit maps to more than the engine's {MAX_BLOCKS} blocks"));
     }
+    // Each terminal's power by where it starts: the unit, then each element
+    // on its path making its own noise.
+    let mut by_source = Vec::new();
     let terminals: Vec<rooms::Terminal> = paths
         .iter()
         .map(|(t, _, mapped)| {
             let sys = DuctSystem::from_params(&params(mapped, rooms::DEFAULT_ROOM_M3, rooms::DEFAULT_RECEIVER_M));
+            let origins = std::iter::once((unit.id, "unit")).chain(mapped.iter().map(|m| (m.element, m.block.type_name())));
+            by_source.push(origins.zip(sys.diffuser_pwl_by_source()).collect::<Vec<_>>());
             let location = locate(*t);
             rooms::Terminal {
                 pwl: sys.diffuser_pwl().map(|b| b.value),
@@ -257,7 +263,7 @@ pub fn analyse_bytes(
     // Breakout: each straight on a rated path, once, radiating what enters it
     // down through the ceiling of the room it is over.
     let mut seen = std::collections::HashSet::new();
-    let mut sources = Vec::new();
+    let (mut sources, mut source_elements) = (Vec::new(), Vec::new());
     for (_, _, mapped) in &paths {
         let sys = DuctSystem::from_params(&params(mapped, rooms::DEFAULT_ROOM_M3, rooms::DEFAULT_RECEIVER_M));
         let (mut q, mut pwl) = (sys.volume_flow(), source_pwl(sys.source_type, sys.source_offset));
@@ -273,12 +279,47 @@ pub fn analyse_bytes(
                     let radiated = radiated_pwl_db(&pwl.map(|b| b.value), &run, &per_m);
                     let ceiling = CEILING.transfer_db();
                     sources.push(rooms::Source { pwl: std::array::from_fn(|i| radiated[i] - ceiling[i]), location, space });
+                    source_elements.push(m.element);
                 }
             }
             pwl = block.forward(&pwl, q);
         }
     }
     let rated = rooms::rate(&terminals, &sources, &spaces);
+    // What sets a room's rating: at the band nearest its NC curve, each
+    // element's share of what its worst receiver hears there.
+    let controls = |r: &rooms::RoomRating| {
+        let curve = curve_at(r.nc as f64);
+        let band = (0..N_BANDS).max_by(|&a, &b| (r.spl[a] - curve[a]).total_cmp(&(r.spl[b] - curve[b]))).unwrap();
+        let e = |l: f64| 10f64.powf(l / 10.0);
+        let mut shares: Vec<((i64, &str), f64)> = Vec::new();
+        let mut add = |key: (i64, &'static str), energy: f64| match shares.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, sum)) => *sum += energy,
+            None => shares.push((key, energy)),
+        };
+        for (part, spl) in &r.parts {
+            match *part {
+                rooms::Part::Terminal(t) => {
+                    let whole: f64 = by_source[t].iter().map(|(_, pwl)| e(pwl[band])).sum();
+                    for &(key, pwl) in &by_source[t] {
+                        add(key, e(spl[band]) * e(pwl[band]) / whole);
+                    }
+                }
+                rooms::Part::Source(k) => add((source_elements[k], "breakout"), e(spl[band])),
+            }
+        }
+        let total: f64 = shares.iter().map(|(_, x)| x).sum();
+        shares.sort_by(|a, b| b.1.total_cmp(&a.1));
+        json!({
+            "band_hz": OCTAVE_BANDS_HZ[band],
+            "parts": shares
+                .iter()
+                .take(5)
+                .filter(|(_, x)| x / total >= 0.005)
+                .map(|((element, how), x)| json!({ "element": element, "as": how.to_lowercase(), "share": (x / total * 1000.0).round() / 1000.0 }))
+                .collect::<Vec<_>>(),
+        })
+    };
     let room_json = |r: &rooms::RoomRating| {
         let id = |k: usize| net.nodes[paths[k].0].id;
         json!({
@@ -289,9 +330,25 @@ pub fn analyse_bytes(
             "breakout": { "runs": r.breakout_runs, "share": (r.breakout_share * 1000.0).round() / 1000.0 },
             "receiver_under": id(r.receiver_under),
             "dominant": { "terminal": id(r.dominant), "distance_m": (r.dominant_distance_m * 100.0).round() / 100.0 },
+            "controls": controls(r),
         })
     };
     let room = &rated[0];
+    let worst = controls(room);
+    let unit_share = worst["parts"].as_array().unwrap().iter().find(|p| p["as"] == "unit").and_then(|p| p["share"].as_f64()).unwrap_or(0.0);
+    if source.is_none() && unit_share > 0.5 {
+        issues.push(json!({
+            "kind": "unit_sound_power_estimated",
+            "severity": "warning",
+            "elements": [unit.id],
+            "message": format!(
+                "the worst room, {}, is set at {:.0} Hz by unit {}'s own noise ({:.0}% of it), and the model gives no sound power for the unit: it is estimated from the unit's flow",
+                room.space.map_or("a terminal in no space".to_string(), |k| spaces[k].name.clone()),
+                worst["band_hz"].as_f64().unwrap(), unit.id, unit_share * 100.0
+            ),
+            "check": "the unit's sound power data, entered as its sound power",
+        }));
+    }
     let (terminal, path, mapped) = &paths[room.dominant];
     let terminal = *terminal;
     let path_ms = lap();
