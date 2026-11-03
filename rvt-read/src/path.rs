@@ -124,6 +124,8 @@ mod tests {
             location: None,
             flow,
             ifc: None,
+            description: String::new(),
+            extent: None,
         }
     }
 

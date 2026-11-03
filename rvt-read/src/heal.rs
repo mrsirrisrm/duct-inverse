@@ -149,6 +149,8 @@ mod tests {
             location: Some(at),
             flow: None,
             ifc: None,
+            description: String::new(),
+            extent: None,
         }
     }
 

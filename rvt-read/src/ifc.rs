@@ -902,6 +902,8 @@ pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
                     location: None,
                     flow: None,
                     ifc: None,
+                    description: String::new(),
+                    extent: None,
                 })
             }
         };

@@ -215,11 +215,12 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>
                     push(BlockParams::Damper { width_m: w, height_m: h, closed_deg, round }, node.family.clone());
                 }
             }
-            // A silencer from the IFC: its length is its longest extent. The
+            // A silencer: its length is its longest extent, the IFC's, else
+            // its Revit box's (overstated for one off the model's axes). The
             // engine's attenuator is a rectangular splitter unit; the free
             // area and splitter are stand-ins until the model carries data.
             NodeKind::Fitting if ty == Some(ElementType::Silencer) => {
-                let length = node.ifc.as_ref().and_then(|i| i.size).map(|s| s[0].max(s[1]).max(s[2]));
+                let length = node.ifc.as_ref().and_then(|i| i.size).or(node.extent).map(|s| s[0].max(s[1]).max(s[2]));
                 // A round section's square stands in for it.
                 if let (Some(length_m), Some((w, h, _))) = (length, section(net, path, i)) {
                     push(
@@ -228,9 +229,9 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>
                     );
                 }
             }
-            // A plenum with its extent from the IFC; a Revit one alone has none.
+            // A plenum with its extent from the IFC, else its Revit box.
             NodeKind::Fitting | NodeKind::Equipment if ty == Some(ElementType::Plenum) => {
-                let size = node.ifc.as_ref().and_then(|i| i.size);
+                let size = node.ifc.as_ref().and_then(|i| i.size).or(node.extent);
                 if let Some(size) = size {
                     if let Some(openings) = plenum_openings(net, path, i, size) {
                         let mut s = size;
@@ -276,6 +277,8 @@ mod tests {
             location: None,
             flow: Some(0.2),
             ifc: None,
+            description: String::new(),
+            extent: None,
         };
         let duct = |id, x: f64| {
             node(id, NodeKind::Duct { start: [x, 0.0, 0.0], end: [x + 2.0, 0.0, 0.0], width: 0.4, height: 0.3, round: false }, "")

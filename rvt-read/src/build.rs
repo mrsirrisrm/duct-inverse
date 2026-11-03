@@ -17,13 +17,14 @@ pub enum Field<'a> {
     Str(&'a str),
 }
 
-/// One decoded element: its rvt-rs class, named fields, and design airflow
-/// in ft^3/s where a parameter carries one.
+/// One decoded element: its rvt-rs class, named fields, design airflow in
+/// ft^3/s where a parameter carries one, and its descriptive parameters.
 pub struct Element<'a> {
     pub id: i64,
     pub class: &'a str,
     pub fields: Vec<(&'a str, Field<'a>)>,
     pub flow_cfs: Option<f64>,
+    pub description: String,
 }
 
 fn kind_of(class: &str) -> Option<NodeKind> {
@@ -108,6 +109,10 @@ pub fn build<'a>(elements: impl IntoIterator<Item = Element<'a>>, decoded: &Hash
             })
             .collect();
         joins.extend(element.joined_ids().map(|other| (element.id, other)));
+        let extent = match kind {
+            NodeKind::Fitting | NodeKind::Equipment => element.point(["m_bboxWidth", "m_bboxDepth", "m_bboxHeight"]),
+            _ => None,
+        };
         net.add_node(Node {
             id: element.id,
             kind,
@@ -117,6 +122,8 @@ pub fn build<'a>(elements: impl IntoIterator<Item = Element<'a>>, decoded: &Hash
             location: element.point(["m_locationX", "m_locationY", "m_locationZ"]),
             flow: element.flow_cfs.map(|q| q * CFS),
             ifc: None,
+            extent,
+            description: element.description,
         });
     }
 
@@ -134,6 +141,8 @@ pub fn build<'a>(elements: impl IntoIterator<Item = Element<'a>>, decoded: &Hash
                 location: None,
                 flow: None,
                 ifc: None,
+                description: String::new(),
+                extent: None,
             }),
         };
         let a = net.find(a).expect("join source is a built node");
@@ -143,6 +152,23 @@ pub fn build<'a>(elements: impl IntoIterator<Item = Element<'a>>, decoded: &Hash
 }
 
 /// Design airflow from parameter entries in rvt-rs's JSON shape.
+/// Saved parameters that say what an element is where its family's name
+/// may not: the IFC class a family exports as, and MagiCAD's national
+/// classification ("Äänenvaimennin", a silencer).
+pub const DESCRIPTIVE_PARAMETERS: [&str; 3] = ["IfcExportAs", "IfcExportType", "MC National Classification Description"];
+
+/// The [`DESCRIPTIVE_PARAMETERS`] an element has, joined.
+pub fn description_from_parameters<'v>(parameters: impl IntoIterator<Item = &'v serde_json::Value>) -> String {
+    let mut found: Vec<&str> = parameters
+        .into_iter()
+        .filter(|p| p["name"].as_str().is_some_and(|n| DESCRIPTIVE_PARAMETERS.contains(&n)))
+        .filter_map(|p| p["value"].as_str())
+        .filter(|v| !v.is_empty())
+        .collect();
+    found.dedup();
+    found.join(" ")
+}
+
 pub fn flow_from_parameters<'v>(parameters: impl IntoIterator<Item = &'v serde_json::Value>) -> Option<f64> {
     parameters.into_iter().find_map(|p| match p["name"].as_str() {
         Some("Flow" | "Air Flow") => p["value"].as_f64(),

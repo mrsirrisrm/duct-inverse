@@ -30,6 +30,12 @@ pub struct Node {
     pub flow: Option<f64>,
     /// What an IFC export of the model says the element is, once merged.
     pub ifc: Option<IfcInfo>,
+    /// The Revit model's descriptive parameters ([`crate::build::DESCRIPTIVE_PARAMETERS`]),
+    /// joined: what its family names may not say.
+    pub description: String,
+    /// A fitting's or unit's extent along the model's axes, metres, from
+    /// its Revit record box.
+    pub extent: Option<Point>,
 }
 
 /// A Revit model's insulation and lining on an element.

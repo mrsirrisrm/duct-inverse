@@ -45,7 +45,10 @@ npm run dev
   Autodesk's rme_advanced and Snowdon Towers, Granlund's BIM4LCA housing) into
   the gitignored `samples/`, checked against their hashes. With them,
   `DUCT_SAMPLES=$PWD/samples cargo test --features rvt` in `rvt-read/` holds
-  the insulation read from Granlund's `.rvt` to Revit's IFC export of it.
+  the network read from Granlund's `.rvt` alone (its joins, duct sizes,
+  insulation and accessories) to Revit's IFC export of it, and
+  `DUCT_SAMPLES=$PWD/samples cargo test` in `rvt-read/wasm/` rates it alone as
+  with its IFC.
 
 ## Deploying to Vercel
 

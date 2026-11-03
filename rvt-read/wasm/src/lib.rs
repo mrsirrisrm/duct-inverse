@@ -370,9 +370,9 @@ pub fn analyse_bytes(
             "velocity grades: CIBSE Guide B table 5.2 for ducts above a suspended ceiling (critical/normal/non-critical spaces), mains before the path's last branch 50% more; a warning past the normal space's",
             "end reflection: diffusers flush with a hard ceiling (a tile ceiling would lose ~2 dB more at 63-125 Hz)",
             "dampers open; a VAV box is its damper, 15° closed",
-            "silencers: length from the IFC, section from the duct, free area 0.5 and 100 mm splitters assumed",
-            "plenums: Wells' method, their extent from the IFC, openings the ducts either side; walls bare sheet metal (absorption 0.05), the least loss; at most 20 dB below the inlet's cut-on",
-            "element types from family-name rules; names they leave are listed under classified",
+            "silencers: length from the IFC, else the Revit element's box; section from the duct, free area 0.5 and 100 mm splitters assumed",
+            "plenums: Wells' method, their extent from the IFC or else the Revit element's box, openings the ducts either side; walls bare sheet metal (absorption 0.05), the least loss; at most 20 dB below the inlet's cut-on",
+            "element types from rules on family and type names and Revit's descriptive parameters (IfcExportAs, MagiCAD's classification), then the IFC class; names they leave are listed under classified",
         ],
         "warnings": warnings,
     }))

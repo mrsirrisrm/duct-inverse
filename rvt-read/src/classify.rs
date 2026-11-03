@@ -123,11 +123,15 @@ const FITTING: &[Category] = &[Fitting];
 /// a "sidewall diffuser" a grille. A `None` row abstains outright.
 const RULES: &[(&[Category], &[&str], Option<ElementType>)] = &[
     // Named things that are not air-path elements, whatever else the name says.
-    (ALL, &["controller", "detector", "sensor", "thermostat", "cable", "tray", "collar", "filter", "convector", "cross over", "crossover"], None),
+    // Suodatin: Finnish, a filter.
+    (ALL, &["controller", "detector", "sensor", "thermostat", "cable", "tray", "collar", "filter", "suodatin", "convector", "cross over", "crossover"], None),
     (INLINE, &["vav", "cav", "terminal unit", "fan powered"], Some(VavTerminalUnit)),
-    (INLINE, &["fire+damper", "smoke+damper", "intumescent+damper", "fsd", "sfd", "fd"], Some(FireSmokeDamper)),
-    (INLINE, &["silencer", "attenuator", "attn", "schalldämpfer", "schalldampfer"], Some(Silencer)),
-    (INLINE, &["damper", "vcd", "obd"], Some(VolumeDamper)),
+    // Finnish, as MagiCAD classifies them: palopelti (fire damper),
+    // äänenvaimennin (silencer), säätöpelti and moottoripelti (balancing and
+    // motorised dampers).
+    (INLINE, &["fire+damper", "smoke+damper", "intumescent+damper", "fsd", "sfd", "fd", "palopelti"], Some(FireSmokeDamper)),
+    (INLINE, &["silencer", "attenuator", "attn", "schalldämpfer", "schalldampfer", "äänenvaimennin"], Some(Silencer)),
+    (INLINE, &["damper", "vcd", "obd", "säätöpelti", "moottoripelti"], Some(VolumeDamper)),
     (INLINE, &["plenum"], Some(Plenum)),
 ];
 
@@ -259,11 +263,11 @@ fn from_ifc(ifc: &IfcInfo) -> Option<ElementType> {
     }
 }
 
-/// A node's type: the name rules (with the IFC description, where merged),
-/// then the IFC class.
+/// A node's type: the name rules (with Revit's descriptive parameters and
+/// the IFC description, where merged), then the IFC class.
 pub fn classify_node(node: &Node) -> Option<ElementType> {
     let description = node.ifc.as_ref().map_or("", |i| i.description.as_str());
-    classify(Category::of(&node.kind), &node.family, &format!("{} {description}", node.type_name))
+    classify(Category::of(&node.kind), &node.family, &format!("{} {} {description}", node.type_name, node.description))
         .or_else(|| node.ifc.as_ref().and_then(from_ifc))
 }
 
