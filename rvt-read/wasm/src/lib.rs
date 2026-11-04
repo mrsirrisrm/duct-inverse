@@ -210,70 +210,81 @@ pub fn analyse_bytes(
     };
 
     let mut issues = issues(&net);
-    let Some(cp) = path::critical_path(&net) else {
+    let systems = path::unit_systems(&net);
+    if systems.is_empty() {
         return Ok(json!({ "recorded": recorded, "ifc": ifc, "healed": healed, "classified": classified(&net), "issues": issues, "path": null }));
-    };
-    let unit = &net.nodes[cp.tree.root];
-    let q_unit = cp.flow[cp.tree.root];
-    if let Some(rated) = unit.flow.filter(|&r| r > 0.0 && (r - q_unit).abs() > 0.05 * q_unit) {
-        issues.push(json!({
-            "kind": "unit_flow_mismatch",
-            "severity": "warning",
-            "elements": [unit.id],
-            "message": format!(
-                "unit {} Air Flow is {:.0} L/s; its {} terminals sum to {:.0} L/s, which the rating uses",
-                unit.id, rated * 1000.0, cp.system, q_unit * 1000.0
-            ),
-            "check": "the unit's Air Flow and its terminals' design flows",
-        }));
     }
-    // No sound data in the model; without the unit's own, an estimate from its flow.
-    let lw = source.unwrap_or_else(|| fan_estimate(q_unit));
-    let params = |mapped: &[chain::Mapped], room_volume_m3: f64, receiver_distance_m: f64| Params {
-        source_type: SourceType::Given(lw),
+    // Each unit's flow, its terminals' sum, and its sound power: no sound
+    // data in the model, so without the unit's own an estimate from its flow.
+    let units: Vec<(f64, [f64; N_BANDS])> = systems
+        .iter()
+        .map(|u| {
+            let q = u.flow[u.tree.root];
+            (q, source.unwrap_or_else(|| fan_estimate(q)))
+        })
+        .collect();
+    for (u, &(q_unit, _)) in systems.iter().zip(&units) {
+        let unit = &net.nodes[u.tree.root];
+        if let Some(rated) = unit.flow.filter(|&r| r > 0.0 && (r - q_unit).abs() > 0.05 * q_unit) {
+            issues.push(json!({
+                "kind": "unit_flow_mismatch",
+                "severity": "warning",
+                "elements": [unit.id],
+                "message": format!(
+                    "unit {} Air Flow is {:.0} L/s; its {} terminals sum to {:.0} L/s, which the rating uses",
+                    unit.id, rated * 1000.0, u.system, q_unit * 1000.0
+                ),
+                "check": "the unit's Air Flow and its terminals' design flows",
+            }));
+        }
+    }
+    let params = |unit: usize, mapped: &[chain::Mapped], room_volume_m3: f64, receiver_distance_m: f64| Params {
+        source_type: SourceType::Given(units[unit].1),
         source_offset_db: 0.0,
-        volume_flow_m3s: q_unit,
+        volume_flow_m3s: units[unit].0,
         room_volume_m3,
         receiver_distance_m,
         lined_fit: Default::default(),
         blocks: mapped.iter().map(|m| m.block).collect(),
     };
-    // Every terminal the unit serves, its power into its room: each division
+    // Every terminal each unit serves, its power into its room: each division
     // on the way out takes power off, so the farthest is seldom the loudest.
-    let candidates: Vec<_> = cp
-        .tree
-        .order
-        .iter()
-        .filter(|&&t| net.nodes[t].kind == NodeKind::Terminal && net.nodes[t].flow.is_some_and(|q| q > 0.0))
-        .filter_map(|&t| cp.tree.path_to(t).map(|p| (t, p)))
-        .collect();
-    let terminals_rated = candidates.len();
-    let mut children = vec![Vec::new(); net.nodes.len()];
-    for &n in &cp.tree.order {
-        if let Some(p) = cp.tree.parent[n] {
-            children[p].push(n);
+    // A terminal two units' trees reach is rated under the first.
+    let mut taken = vec![false; net.nodes.len()];
+    let mut paths = Vec::new();
+    for (u, unit) in systems.iter().enumerate() {
+        let mut children = vec![Vec::new(); net.nodes.len()];
+        for &n in &unit.tree.order {
+            if let Some(p) = unit.tree.parent[n] {
+                children[p].push(n);
+            }
+        }
+        for &t in &unit.tree.order {
+            if taken[t] || net.nodes[t].kind != NodeKind::Terminal || !net.nodes[t].flow.is_some_and(|q| q > 0.0) {
+                continue;
+            }
+            let Some(p) = unit.tree.path_to(t) else { continue };
+            taken[t] = true;
+            let mapped = chain::chain(&net, &p, &unit.flow, &children, bend_regen);
+            if mapped.len() <= MAX_BLOCKS {
+                paths.push((u, t, p, mapped));
+            }
         }
     }
-    let paths: Vec<_> = candidates
-        .into_iter()
-        .filter_map(|(t, p)| {
-            let mapped = chain::chain(&net, &p, &cp.flow, &children, bend_regen);
-            (mapped.len() <= MAX_BLOCKS).then_some((t, p, mapped))
-        })
-        .collect();
+    let terminals_rated = taken.iter().filter(|&&t| t).count();
     if paths.is_empty() {
-        return Err(format!("every path from the unit maps to more than the engine's {MAX_BLOCKS} blocks"));
+        return Err(format!("every path from the units maps to more than the engine's {MAX_BLOCKS} blocks"));
     }
     // Each terminal's power by where it starts: the unit, then each element
     // on its path making its own noise.
     let mut by_source = Vec::new();
     let terminals: Vec<rooms::Terminal> = paths
         .iter()
-        .map(|(t, _, mapped)| {
-            let sys = DuctSystem::from_params(&params(mapped, rooms::DEFAULT_ROOM_M3, rooms::DEFAULT_RECEIVER_M));
-            let origins = std::iter::once((unit.id, "unit")).chain(mapped.iter().map(|m| (m.element, m.block.type_name())));
+        .map(|&(u, t, _, ref mapped)| {
+            let sys = DuctSystem::from_params(&params(u, mapped, rooms::DEFAULT_ROOM_M3, rooms::DEFAULT_RECEIVER_M));
+            let origins = std::iter::once((net.nodes[systems[u].tree.root].id, "unit")).chain(mapped.iter().map(|m| (m.element, m.block.type_name())));
             by_source.push(origins.zip(sys.diffuser_pwl_by_source()).collect::<Vec<_>>());
-            let location = locate(*t);
+            let location = locate(t);
             rooms::Terminal {
                 pwl: sys.diffuser_pwl().map(|b| b.value),
                 location,
@@ -285,8 +296,8 @@ pub fn analyse_bytes(
     // down through the ceiling of the room it is over.
     let mut seen = std::collections::HashSet::new();
     let (mut sources, mut source_elements) = (Vec::new(), Vec::new());
-    for (_, _, mapped) in &paths {
-        let sys = DuctSystem::from_params(&params(mapped, rooms::DEFAULT_ROOM_M3, rooms::DEFAULT_RECEIVER_M));
+    for &(u, _, _, ref mapped) in &paths {
+        let sys = DuctSystem::from_params(&params(u, mapped, rooms::DEFAULT_ROOM_M3, rooms::DEFAULT_RECEIVER_M));
         let (mut q, mut pwl) = (sys.volume_flow(), source_pwl(sys.source_type, sys.source_offset));
         for (block, m) in sys.blocks.iter().zip(mapped) {
             q = block.flow_out(q);
@@ -345,7 +356,7 @@ pub fn analyse_bytes(
         (parts, breakout)
     };
     let room_json = |r: &rooms::RoomRating| {
-        let id = |k: usize| net.nodes[paths[k].0].id;
+        let id = |k: usize| net.nodes[paths[k].1].id;
         let (parts, breakout) = controls(r);
         json!({
             "space": r.space.map(|k| spaces[k].name.clone()),
@@ -360,22 +371,25 @@ pub fn analyse_bytes(
     };
     let room = &rated[0];
     let (worst, _) = controls(room);
-    let unit_share = worst["parts"].as_array().unwrap().iter().find(|p| p["as"] == "unit").and_then(|p| p["share"].as_f64()).unwrap_or(0.0);
-    if source.is_none() && unit_share > 0.5 {
+    let loudest_unit = worst["parts"].as_array().unwrap().iter().find(|p| p["as"] == "unit");
+    let unit_share = loudest_unit.and_then(|p| p["share"].as_f64()).unwrap_or(0.0);
+    if let (None, Some(loudest_unit), true) = (source, loudest_unit, unit_share > 0.5) {
         issues.push(json!({
             "kind": "unit_sound_power_estimated",
             "severity": "warning",
-            "elements": [unit.id],
+            "elements": [loudest_unit["element"]],
             "message": format!(
                 "the worst room, {}, is set at {:.0} Hz by unit {}'s own noise ({:.0}% of it), and the model gives no sound power for the unit: it is estimated from the unit's flow",
                 room.space.map_or("a terminal in no space".to_string(), |k| spaces[k].name.clone()),
-                worst["band_hz"].as_f64().unwrap(), unit.id, unit_share * 100.0
+                worst["band_hz"].as_f64().unwrap(), loudest_unit["element"], unit_share * 100.0
             ),
             "check": "the unit's sound power data, entered as its sound power",
         }));
     }
-    let (terminal, path, mapped) = &paths[room.dominant];
-    let terminal = *terminal;
+    let (u, terminal, path, mapped) = &paths[room.dominant];
+    let (u, terminal) = (*u, *terminal);
+    let unit = &net.nodes[systems[u].tree.root];
+    let q_unit = units[u].0;
     let path_ms = lap();
     for &n in path {
         let node = &net.nodes[n];
@@ -401,7 +415,7 @@ pub fn analyse_bytes(
             _ => {}
         }
     }
-    let sys = DuctSystem::from_params(&params(mapped, room.volume_m3, room.dominant_distance_m));
+    let sys = DuctSystem::from_params(&params(u, mapped, room.volume_m3, room.dominant_distance_m));
 
     let mut q = sys.volume_flow();
     let mut pwl = source_pwl(sys.source_type, sys.source_offset);
@@ -470,7 +484,8 @@ pub fn analyse_bytes(
         "issues": issues,
         "path": {
             "unit": { "id": unit.id, "family": unit.family, "air_flow_l_s": unit.flow.map(|q| q * 1000.0) },
-            "system": cp.system,
+            "system": systems[u].system,
+            "units_rated": systems.len(),
             "terminal": { "id": net.nodes[terminal].id, "family": net.nodes[terminal].family },
             "terminals_rated": terminals_rated,
             "terminals_in_spaces": terminals.iter().filter(|t| t.space.is_some()).count(),
@@ -489,7 +504,7 @@ pub fn analyse_bytes(
         },
         "rooms": rated.iter().take(20).map(&room_json).collect::<Vec<_>>(),
         "assumptions": [
-            if source.is_some() { "source: the unit's sound power as given" } else { "source: a forward-curved fan at the unit's flow and 250 Pa (no sound data given)" },
+            if source.is_some() { "source: every unit's sound power as given" } else { "source: each unit's system, supply, return or extract, a forward-curved fan at its flow and 250 Pa (no sound data given)" },
             if revit_rooms { "rooms from the Revit model's MEP spaces, their volume their extent's" } else { "rooms from the IFC's spaces, their volume their extent's" },
             "rooms: a receiver at 1.2 m under each diffuser, every diffuser in the room reaching it by Schultz's equation (a normally furnished room) at its distance; the room rated at its worst receiver",
             "a terminal in no space: rated alone, in 50 m3 at 2 m",

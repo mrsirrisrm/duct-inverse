@@ -55,7 +55,7 @@ worker.onmessage = ({ data }) => {
     <p>Islands ${r.recorded.islands} → ${r.healed.islands}; terminals reaching a unit
       ${r.recorded.terminals_with_equipment} → ${r.healed.terminals_with_equipment} of ${r.healed.terminals}.
       ${r.ifc ? `IFC: ${r.ifc.matched} elements matched, ${r.ifc.duct_geometry} ducts given geometry, ${r.ifc.added} added, ${r.ifc.ports} port joins, ${r.ifc.joined_inside} ends-inside joins, ${r.ifc.spaces} spaces.` : ''}</p>
-    <p>${p.unit.family} (${p.system}) → ${p.terminal.family}: ${p.elements} elements, ${p.blocks.length} blocks,
+    <p>${p.units_rated} unit systems rated, ${p.terminals_rated} terminals. The worst room's: ${p.unit.family} (${p.system}) → ${p.terminal.family}: ${p.elements} elements, ${p.blocks.length} blocks,
       <b>NC ${p.nc}</b> in ${p.room.space ?? 'a stand-in room'} (${p.room.volume_m3} m³, ${p.room.terminals} diffuser${p.room.terminals > 1 ? 's' : ''})</p>
     ${controls(p.room)}
     ${r.rooms.length > 1 ? `<p>Next: ${r.rooms.slice(1, 6).map(m => `${m.space ?? 'terminal ' + m.dominant.terminal} NC ${m.nc}`).join(', ')}</p>` : ''}

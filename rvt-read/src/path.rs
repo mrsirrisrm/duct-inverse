@@ -167,15 +167,34 @@ pub fn overfed(net: &Network) -> Vec<Overfed> {
         .collect()
 }
 
-/// Of every unit's systems, the one serving the most terminals with a design
-/// flow, out to its farthest such terminal. Any system: fan noise reaches a
-/// room down exhaust ducts too, and system names are in the model's language.
-/// A unit [`overfed`] is passed over.
-pub fn critical_path(net: &Network) -> Option<CriticalPath> {
-    let (tree, system, flow) = unit_trees(net)
+/// A unit's air system to rate: its tree, and the flow through each node of
+/// it, m^3/s.
+pub struct UnitSystem {
+    pub tree: Tree,
+    pub system: String,
+    pub flow: Vec<f64>,
+}
+
+/// Every unit's systems serving terminals with a design flow, the most such
+/// terminals first. Any system: fan noise reaches a room down exhaust ducts
+/// too, and system names are in the model's language. A unit [`overfed`] is
+/// passed over.
+pub fn unit_systems(net: &Network) -> Vec<UnitSystem> {
+    let count = |tree: &Tree| tree.order.iter().filter(|&&n| has_flow(net, n)).count();
+    let mut systems: Vec<UnitSystem> = unit_trees(net)
         .into_iter()
-        .filter(|(tree, _, flow)| overfed_by(net, tree, flow).is_none())
-        .max_by_key(|(tree, _, _)| tree.order.iter().filter(|&&n| has_flow(net, n)).count())?;
+        .filter(|(tree, _, flow)| count(tree) > 0 && overfed_by(net, tree, flow).is_none())
+        .map(|(tree, system, flow)| UnitSystem { tree, system, flow })
+        .collect();
+    // Stable: equal counts keep the model's order.
+    systems.sort_by_key(|u| std::cmp::Reverse(count(&u.tree)));
+    systems
+}
+
+/// The first of [`unit_systems`], out to its farthest terminal with a
+/// design flow.
+pub fn critical_path(net: &Network) -> Option<CriticalPath> {
+    let UnitSystem { tree, system, flow } = unit_systems(net).into_iter().next()?;
     let terminal = *tree
         .order
         .iter()
@@ -253,6 +272,26 @@ mod tests {
         let cp = critical_path(&net).expect("a path");
         assert_eq!((cp.system.as_str(), cp.terminal), ("SA", t1));
         assert!(unit_trees(&net).iter().all(|(_, s, _)| s == "SA"));
+    }
+
+    /// Every unit with terminals is rated, the one serving most first; one
+    /// with none is not.
+    #[test]
+    fn every_unit_system() {
+        let mut net = Network::default();
+        let small = net.add_node(node(1, NodeKind::Equipment, "SA1", None));
+        let t1 = net.add_node(node(2, NodeKind::Terminal, "SA1", Some(0.1)));
+        let big = net.add_node(node(3, NodeKind::Equipment, "SA2", None));
+        let tee = net.add_node(node(4, NodeKind::Fitting, "SA2", None));
+        let t2 = net.add_node(node(5, NodeKind::Terminal, "SA2", Some(0.1)));
+        let t3 = net.add_node(node(6, NodeKind::Terminal, "SA2", Some(0.1)));
+        let idle = net.add_node(node(7, NodeKind::Equipment, "SA3", None));
+        let d = net.add_node(node(8, NodeKind::DuctNoGeometry, "SA3", None));
+        for (a, b) in [(small, t1), (big, tee), (tee, t2), (tee, t3), (idle, d)] {
+            net.connect(a, b, EdgeSource::Recorded);
+        }
+        let roots: Vec<_> = unit_systems(&net).iter().map(|u| (u.tree.root, u.system.clone())).collect();
+        assert_eq!(roots, [(big, "SA2".to_string()), (small, "SA1".to_string())]);
     }
 
     /// A unit whose terminals take three times its rated flow is not rated,

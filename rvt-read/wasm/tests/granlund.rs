@@ -11,8 +11,9 @@ fn analyse(rvt: &[u8], ifc: Option<&[u8]>) -> Value {
 }
 
 /// The worst path is the same, through the same blocks, and its receiver
-/// within 1 dB in every band, with the same issues: the dampers, silencers
-/// and ducts the Revit file gives are the ones the IFC adds nothing to.
+/// within 1 dB in every band; every room rates the same, with the same
+/// issues: the dampers, silencers and ducts the Revit file gives are the
+/// ones the IFC adds nothing to.
 #[test]
 fn revit_alone_rates_as_with_its_ifc() {
     let Ok(dir) = std::env::var("DUCT_SAMPLES") else {
@@ -30,7 +31,11 @@ fn revit_alone_rates_as_with_its_ifc() {
     assert_eq!(a["nc"], p["nc"]);
     let kinds = |v: &Value| v["blocks"].as_array().unwrap().iter().map(|b| b["type"].clone()).collect::<Vec<_>>();
     assert_eq!(kinds(a), kinds(p));
-    assert_eq!(kinds(a).len(), 27);
+    assert_eq!(kinds(a).len(), 6);
+    // Every room the 22 units serve rates the same.
+    let rooms = |v: &Value| v["rooms"].as_array().unwrap().iter().map(|r| (r["dominant"]["terminal"].clone(), r["nc"].clone())).collect::<Vec<_>>();
+    assert_eq!(rooms(&alone), rooms(&paired));
+    assert_eq!((a["units_rated"].as_u64(), a["terminals_rated"].as_u64()), (Some(22), Some(94)));
     let bands = |v: &Value| v["receiver_spl_db"].as_array().unwrap().iter().map(|b| b.as_f64().unwrap()).collect::<Vec<_>>();
     for (x, y) in bands(a).iter().zip(bands(p)) {
         assert!((x - y).abs() < 1.0, "{:?} alone, {:?} with the IFC", bands(a), bands(p));
