@@ -47,10 +47,8 @@ pub struct RoomRating {
     pub dominant_distance_m: f64,
     pub spl: [f64; N_BANDS],
     pub nc: i32,
-    /// Breakout runs over the room, and their share of the worst receiver's
-    /// energy.
+    /// Breakout runs over the room.
     pub breakout_runs: usize,
-    pub breakout_share: f64,
     /// What reaches the worst receiver, each part's level there.
     pub parts: Vec<(Part, [f64; N_BANDS])>,
 }
@@ -104,7 +102,6 @@ pub fn rate(terminals: &[Terminal], sources: &[Source], spaces: &[IfcSpace]) -> 
                     spl,
                     nc: nc_exact(&spl),
                     breakout_runs: 0,
-                    breakout_share: 0.0,
                     parts: vec![(Part::Terminal(i), spl)],
                 }
             }
@@ -130,13 +127,12 @@ pub fn rate(terminals: &[Terminal], sources: &[Source], spaces: &[IfcSpace]) -> 
                             10.0 * (parts.iter().map(|p| e(p.2[b])).sum::<f64>() + breakout.iter().map(|x| e(x[b])).sum::<f64>()).log10()
                         });
                         let (dominant, at, _) = *parts.iter().max_by(|a, b| energy(&a.2).total_cmp(&energy(&b.2))).unwrap();
-                        let share = breakout.iter().map(energy).sum::<f64>() / energy(&spl);
                         let heard = parts.iter().map(|p| (Part::Terminal(p.0), p.2)).chain(over.iter().zip(&breakout).map(|(&k, x)| (Part::Source(k), *x)));
-                        (r, dominant, at, spl, share, heard.collect())
+                        (r, dominant, at, spl, heard.collect())
                     })
                     .max_by(|a, b| (nc_exact(&a.3), energy(&a.3)).partial_cmp(&(nc_exact(&b.3), energy(&b.3))).unwrap())
                     .unwrap();
-                let (receiver_under, dominant, dominant_distance_m, spl, breakout_share, parts) = worst;
+                let (receiver_under, dominant, dominant_distance_m, spl, parts) = worst;
                 RoomRating {
                     space,
                     terminals: members,
@@ -147,7 +143,6 @@ pub fn rate(terminals: &[Terminal], sources: &[Source], spaces: &[IfcSpace]) -> 
                     spl,
                     nc: nc_exact(&spl),
                     breakout_runs: over.len(),
-                    breakout_share,
                     parts,
                 }
             }
@@ -248,8 +243,8 @@ mod tests {
         }
     }
 
-    /// A run over the room adds at every receiver by its distance, and its
-    /// share is reported; one over another room does not.
+    /// A run over the room adds at every receiver by its distance, and is
+    /// one of the parts heard; one over another room does not.
     #[test]
     fn breakout_adds() {
         let t = [Terminal { pwl: PWL, location: Some([5.0, 3.0, 2.7]), space: Some(0) }];
@@ -258,7 +253,6 @@ mod tests {
         let elsewhere = Source { pwl: PWL, location: [5.0, 3.0, 2.7], space: 1 };
         let both = rate(&t, &[run, elsewhere], &[room()]).remove(0);
         assert_eq!(both.breakout_runs, 1);
-        assert!((both.breakout_share - 0.5).abs() < 1e-9);
         assert_eq!(both.parts.iter().map(|p| p.0).collect::<Vec<_>>(), [Part::Terminal(0), Part::Source(0)]);
         (0..N_BANDS).for_each(|b| assert!((both.spl[b] - alone.spl[b] - 10.0 * 2f64.log10()).abs() < 1e-9));
     }

@@ -94,8 +94,8 @@ fn plenum_on_the_path() {
     for (before, after) in lw(&blocks[k - 1]).iter().zip(lw(&blocks[k])) {
         assert!((before - after - expected).abs() < 0.15, "{before} -> {after}, expected {expected:.1} dB");
     }
-    let warnings = report["warnings"].as_array().unwrap();
-    assert!(!warnings.iter().any(|w| w.as_str().unwrap().contains("not modelled")), "{warnings:?}");
+    let issues = report["issues"].as_array().unwrap();
+    assert!(!issues.iter().any(|i| i["kind"] == "plenum_unsized"), "{issues:?}");
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn breakout_into_the_room() {
     let room = &over["path"]["room"];
     assert_eq!(room["breakout"]["runs"], 3, "{room}");
     assert_eq!(above["path"]["room"]["breakout"]["runs"], 0);
-    let share = room["breakout"]["share"].as_f64().unwrap();
+    let share = room["breakout"]["share_at_band"].as_f64().unwrap();
     assert!(share > 0.0 && share < 1.0, "{share}");
     let lp = |v: &Value| v["path"]["receiver_spl_db"].as_array().unwrap().iter().map(|b| b.as_f64().unwrap()).collect::<Vec<_>>();
     assert!(lp(&over).iter().zip(lp(&above)).all(|(o, a)| o >= &a), "{:?} vs {:?}", lp(&over), lp(&above));

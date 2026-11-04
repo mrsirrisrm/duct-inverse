@@ -25,7 +25,9 @@ const DUCT_WALL_KG_M2: f64 = 6.3;
 const CEILING: Ceiling = Ceiling::FibreglassTile;
 use wasm_bindgen::prelude::*;
 
-fn connectivity(net: &Network) -> Value {
+/// The network's islands, and its terminals, each with whether its island
+/// holds a unit.
+fn terminals_served(net: &Network) -> (usize, Vec<(usize, bool)>) {
     let island = graph::islands(net);
     let islands = island.iter().collect::<std::collections::HashSet<_>>().len();
     let reach = graph::equipment_reach(net, &island);
@@ -34,9 +36,14 @@ fn connectivity(net: &Network) -> Value {
         .filter(|r| r.terminals > 0)
         .map(|r| island[r.equipment])
         .collect();
-    let terminals = net.nodes.iter().zip(&island).filter(|(n, _)| n.kind == NodeKind::Terminal);
-    let (total, reached) = terminals.fold((0, 0), |(t, r), (_, i)| (t + 1, r + served.contains(i) as usize));
-    json!({ "edges": net.edges.len(), "islands": islands, "terminals": total, "terminals_with_equipment": reached })
+    let terminals = (0..net.nodes.len()).filter(|&n| net.nodes[n].kind == NodeKind::Terminal);
+    (islands, terminals.map(|n| (n, served.contains(&island[n]))).collect())
+}
+
+fn connectivity(net: &Network) -> Value {
+    let (islands, terminals) = terminals_served(net);
+    let reached = terminals.iter().filter(|(_, served)| *served).count();
+    json!({ "edges": net.edges.len(), "islands": islands, "terminals": terminals.len(), "terminals_with_equipment": reached })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -58,12 +65,24 @@ fn clock_ms() -> f64 {
     }
 }
 
-/// Rule coverage over the fittings, terminals and equipment, by element, and
-/// the distinct names the rules left: the classifier's queue.
 /// What in the model stops it being rated as it stands, for the engineer to
 /// check: each issue's kind, the elements it is about, what is wrong and
 /// what to look at.
 fn issues(net: &Network) -> Vec<Value> {
+    let (_, terminals) = terminals_served(net);
+    let unserved: Vec<i64> = terminals.iter().filter(|(_, served)| !served).map(|&(n, _)| net.nodes[n].id).collect();
+    let unserved = (!unserved.is_empty()).then(|| {
+        json!({
+            "kind": "terminals_unserved",
+            "severity": "warning",
+            "elements": unserved,
+            "message": format!(
+                "{} of the {} terminals connect to no unit, so the rooms they serve are not rated",
+                unserved.len(), terminals.len()
+            ),
+            "check": "their ductwork for a gap, or for a unit not in this model (in a linked one)",
+        })
+    });
     path::overfed(net)
         .into_iter()
         .map(|o| {
@@ -90,9 +109,12 @@ fn issues(net: &Network) -> Vec<Value> {
                 "joins": joins,
             })
         })
+        .chain(unserved)
         .collect()
 }
 
+/// Rule coverage over the fittings, terminals and equipment, by element, and
+/// the distinct names the rules left: the classifier's queue.
 fn classified(net: &Network) -> Value {
     let mut left = std::collections::BTreeMap::<(&str, &str), usize>::new();
     let (mut total, mut named) = (0, 0);
@@ -153,7 +175,6 @@ pub fn analyse_bytes(
         .map_err(|e| e.to_string())?,
         None => Network::default(),
     };
-    let mut warnings = Vec::new();
     let mut recorded = connectivity(&net);
     let mut spaces = Vec::new();
     let ifc = ifc_bytes.map(|b| {
@@ -287,7 +308,8 @@ pub fn analyse_bytes(
     }
     let rated = rooms::rate(&terminals, &sources, &spaces);
     // What sets a room's rating: at the band nearest its NC curve, each
-    // element's share of what its worst receiver hears there.
+    // element's share of what its worst receiver hears there; and the runs
+    // breaking out over it, together.
     let controls = |r: &rooms::RoomRating| {
         let curve = curve_at(r.nc as f64);
         let band = (0..N_BANDS).max_by(|&a, &b| (r.spl[a] - curve[a]).total_cmp(&(r.spl[b] - curve[b]))).unwrap();
@@ -309,8 +331,9 @@ pub fn analyse_bytes(
             }
         }
         let total: f64 = shares.iter().map(|(_, x)| x).sum();
+        let breakout: f64 = shares.iter().filter(|((_, how), _)| *how == "breakout").map(|(_, x)| x / total).sum::<f64>() + 0.0;
         shares.sort_by(|a, b| b.1.total_cmp(&a.1));
-        json!({
+        let parts = json!({
             "band_hz": OCTAVE_BANDS_HZ[band],
             "parts": shares
                 .iter()
@@ -318,23 +341,25 @@ pub fn analyse_bytes(
                 .filter(|(_, x)| x / total >= 0.005)
                 .map(|((element, how), x)| json!({ "element": element, "as": how.to_lowercase(), "share": (x / total * 1000.0).round() / 1000.0 }))
                 .collect::<Vec<_>>(),
-        })
+        });
+        (parts, breakout)
     };
     let room_json = |r: &rooms::RoomRating| {
         let id = |k: usize| net.nodes[paths[k].0].id;
+        let (parts, breakout) = controls(r);
         json!({
             "space": r.space.map(|k| spaces[k].name.clone()),
             "volume_m3": (r.volume_m3 * 10.0).round() / 10.0,
             "terminals": r.terminals.len(),
             "nc": r.nc,
-            "breakout": { "runs": r.breakout_runs, "share": (r.breakout_share * 1000.0).round() / 1000.0 },
+            "breakout": { "runs": r.breakout_runs, "share_at_band": (breakout * 1000.0).round() / 1000.0 },
             "receiver_under": id(r.receiver_under),
             "dominant": { "terminal": id(r.dominant), "distance_m": (r.dominant_distance_m * 100.0).round() / 100.0 },
-            "controls": controls(r),
+            "controls": parts,
         })
     };
     let room = &rated[0];
-    let worst = controls(room);
+    let (worst, _) = controls(room);
     let unit_share = worst["parts"].as_array().unwrap().iter().find(|p| p["as"] == "unit").and_then(|p| p["share"].as_f64()).unwrap_or(0.0);
     if source.is_none() && unit_share > 0.5 {
         issues.push(json!({
@@ -356,15 +381,23 @@ pub fn analyse_bytes(
         let node = &net.nodes[n];
         let ty = classify_node(node);
         match ty {
-            Some(ElementType::Plenum) if !mapped.iter().any(|m| m.element == node.id) => warnings.push(format!(
-                "{} {} ({}) is on the path but not modelled: it needs its extent from an IFC",
-                ty.unwrap().label(),
-                node.id,
-                node.family
-            )),
-            None if node.kind == NodeKind::Fitting => {
-                warnings.push(format!("fitting {} ({} | {}) is unclassified and passed through", node.id, node.family, node.type_name))
-            }
+            Some(ElementType::Plenum) if !mapped.iter().any(|m| m.element == node.id) => issues.push(json!({
+                "kind": "plenum_unsized",
+                "severity": "warning",
+                "elements": [node.id],
+                "message": format!("plenum {} ({}) on the worst room's path has no extent, so its loss is left out", node.id, node.family),
+                "check": "its size: an IFC export gives it",
+            })),
+            None if node.kind == NodeKind::Fitting => issues.push(json!({
+                "kind": "fitting_unclassified",
+                "severity": "warning",
+                "elements": [node.id],
+                "message": format!(
+                    "fitting {} ({} | {}) on the worst room's path is of no type the rules know, so it is passed through with neither loss nor noise",
+                    node.id, node.family, node.type_name
+                ),
+                "check": "what the fitting is: its family and type names",
+            })),
             _ => {}
         }
     }
@@ -390,11 +423,17 @@ pub fn analyse_bytes(
             (BlockParams::Segment { round, .. }, Some(v)) => {
                 let grade = velocity_grade(v, round, last_branch.is_some_and(|b| k < b));
                 if matches!(grade, "non-critical" | "none") {
-                    warnings.push(format!(
-                        "duct {} at {v:.1} m/s is over CIBSE Guide B table 5.2's limit above a suspended ceiling for a normal space{}",
-                        m.element,
-                        if grade == "none" { ", and a non-critical one's" } else { "" }
-                    ));
+                    issues.push(json!({
+                        "kind": "duct_velocity",
+                        "severity": "warning",
+                        "elements": [m.element],
+                        "message": format!(
+                            "duct {} on the worst room's path runs at {v:.1} m/s, over CIBSE Guide B table 5.2's limit above a suspended ceiling for a normal space{}",
+                            m.element,
+                            if grade == "none" { ", and a non-critical one's" } else { "" }
+                        ),
+                        "check": "the duct's size for its flow",
+                    }));
                 }
                 Some(grade)
             }
@@ -469,7 +508,6 @@ pub fn analyse_bytes(
             "plenums: Wells' method, their extent from the IFC or else the Revit element's box, openings the ducts either side; walls bare sheet metal (absorption 0.05), the least loss; at most 20 dB below the inlet's cut-on",
             "element types from rules on family and type names and Revit's descriptive parameters (IfcExportAs, MagiCAD's classification), then the IFC class; names they leave are listed under classified",
         ],
-        "warnings": warnings,
     }))
 }
 

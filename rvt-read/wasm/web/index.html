@@ -63,7 +63,7 @@ worker.onmessage = ({ data }) => {
       ${p.blocks.map(row).join('')}
       <tr><td></td><td>receiver SPL, all the room's diffusers</td><td></td><td></td>${p.receiver_spl_db.map(v => `<td>${v.toFixed(1)}</td>`).join('')}</tr>
     </table>
-    <pre>${[...r.warnings.map(w => 'warning: ' + w), ...r.assumptions.map(a => 'assumed: ' + a)].join('\n')}</pre>`;
+    <pre>${r.assumptions.map(a => 'assumed: ' + a).join('\n')}</pre>`;
 };
 
 const picked = id => document.getElementById(id).files[0]?.arrayBuffer();
