@@ -69,6 +69,9 @@ pub struct IfcElement {
     /// Revit's "Loss Coefficient": a fitting's pressure loss in velocity
     /// pressures.
     pub loss_coefficient: Option<f64>,
+    /// Revit's "System Classification" ("Supply Air"; a list where the
+    /// element is in several systems).
+    pub classification: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -616,6 +619,9 @@ impl<'a> File<'a> {
             (Some(Arg::Str("System Name")), Some(Arg::Str(v))) => {
                 e.systems.extend(text(v).split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from))
             }
+            (Some(Arg::Str("System Classification")), Some(Arg::Str(v))) => {
+                e.classification = text(v).split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
+            }
             (Some(Arg::Str("Flow")), Some(Arg::Num(v))) => e.flow = flow(*v).or(e.flow),
             (Some(Arg::Str("Air Flow")), Some(Arg::Num(v))) if e.flow.is_none() => e.flow = flow(*v),
             (_, Some(Arg::Num(v))) if typed => return flow(*v),
@@ -762,6 +768,7 @@ pub fn parse_with_spaces(bytes: &[u8]) -> (Vec<IfcElement>, Vec<IfcSpace>) {
             section: [None; 3],
             insulated: false,
             loss_coefficient: None,
+            classification: Vec::new(),
         });
     }
 
@@ -908,6 +915,14 @@ pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
             }
         };
         nodes.push(i);
+        // A system's classification, from an element in it alone; the
+        // Revit model's own, where it gave one, stands.
+        if let ([system], [classification]) = (e.systems.as_slice(), e.classification.as_slice()) {
+            let code = ["Supply Air", "Return Air", "Exhaust Air"].iter().position(|c| c == classification);
+            if let Some(code) = code {
+                net.classifications.entry(system.clone()).or_insert(code as u32 + 1);
+            }
+        }
         let node = &mut net.nodes[i];
         if node.kind == NodeKind::Undecoded {
             node.kind = kind_of_class(&e.class);
@@ -1006,6 +1021,28 @@ mod tests {
     /// Two spaces, 5 x 4 x 3 m at x = 10 m and a 2 x 2 m one inside it, in
     /// millimetres: their extents in metres, the long name else the name, and
     /// a point in both is in the smaller.
+    #[test]
+    fn system_classification_from_an_element_in_one_system() {
+        let src = "ISO-10303-21;\nDATA;\n#5=IFCSIUNIT(*,.LENGTHUNIT.,.MILLI.,.METRE.);\n#6=IFCUNITASSIGNMENT((#5));\n\
+             #10=IFCAIRTERMINAL('a',$,'Return Register:RR:10',$,$,$,$,'10',$);\n\
+             #11=IFCUNITARYEQUIPMENT('b',$,'AHU:AHU:11',$,$,$,$,'11',$);\n\
+             #20=IFCPROPERTYSINGLEVALUE('System Name',$,IFCLABEL('Mechanical Return Air 1'),$);\n\
+             #21=IFCPROPERTYSINGLEVALUE('System Classification',$,IFCLABEL('Return Air'),$);\n\
+             #22=IFCPROPERTYSET('p',$,'Mechanical',$,(#20,#21));\n#23=IFCRELDEFINESBYPROPERTIES('r',$,$,$,(#10),#22);\n\
+             #30=IFCPROPERTYSINGLEVALUE('System Name',$,IFCLABEL('Mechanical Supply Air 1,Mechanical Return Air 2'),$);\n\
+             #31=IFCPROPERTYSINGLEVALUE('System Classification',$,IFCLABEL('Return Air,Supply Air'),$);\n\
+             #32=IFCPROPERTYSET('q',$,'Mechanical',$,(#30,#31));\n#33=IFCRELDEFINESBYPROPERTIES('s',$,$,$,(#11),#32);\nENDSEC;";
+        let elements = parse(src.as_bytes());
+        assert_eq!(elements[0].classification, ["Return Air"]);
+        let mut net = Network::default();
+        net.classifications.insert("Mechanical Supply Air 1".into(), 7);
+        merge(&mut net, &elements);
+        // The unit is in two systems: which is which, its lists do not say.
+        assert_eq!(net.classifications.get("Mechanical Return Air 1"), Some(&2));
+        assert_eq!(net.classifications.get("Mechanical Return Air 2"), None);
+        assert_eq!(net.classifications.get("Mechanical Supply Air 1"), Some(&7));
+    }
+
     #[test]
     fn spaces_and_the_space_a_point_is_in() {
         let space = |id: u32, at: f64, side: (f64, f64), name: &str, long: &str| {
