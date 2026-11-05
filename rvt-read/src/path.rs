@@ -135,10 +135,21 @@ fn unit_trees(net: &Network) -> Vec<(Tree, String, Vec<f64>)> {
         .collect()
 }
 
-fn overfed_by(net: &Network, tree: &Tree, flow: &[f64]) -> Option<(f64, f64)> {
+/// The unit's rating and its tree's terminal flow, where the tree takes more
+/// than [`OVERFED_RATIO`] times the rating and would not on its own system's
+/// terminals alone. Terminals the model puts in the unit's system are its,
+/// whatever they sum to (a model's flows can disagree with its unit's); the
+/// excess must come through terminals naming no system.
+fn overfed_by(net: &Network, tree: &Tree, system: &str, flow: &[f64]) -> Option<(f64, f64)> {
     let rated = net.nodes[tree.root].flow.filter(|&q| q > 0.0)?;
     let served = flow[tree.root];
-    (served > OVERFED_RATIO * rated).then_some((rated, served))
+    let own: f64 = tree
+        .order
+        .iter()
+        .filter(|&&n| has_flow(net, n) && net.nodes[n].systems.iter().any(|s| s == system))
+        .map(|&n| net.nodes[n].flow.unwrap_or(0.0))
+        .sum();
+    (served > OVERFED_RATIO * rated && own <= OVERFED_RATIO * rated).then_some((rated, served))
 }
 
 /// The units [`critical_path`] passes over: their terminals take more air
@@ -153,7 +164,7 @@ pub fn overfed(net: &Network) -> Vec<Overfed> {
     unit_trees(net)
         .into_iter()
         .filter_map(|(tree, system, flow)| {
-            let (rated, served) = overfed_by(net, &tree, &flow)?;
+            let (rated, served) = overfed_by(net, &tree, &system, &flow)?;
             let mut healed_joins: Vec<_> = tree
                 .order
                 .iter()
@@ -183,7 +194,7 @@ pub fn unit_systems(net: &Network) -> Vec<UnitSystem> {
     let count = |tree: &Tree| tree.order.iter().filter(|&&n| has_flow(net, n)).count();
     let mut systems: Vec<UnitSystem> = unit_trees(net)
         .into_iter()
-        .filter(|(tree, _, flow)| count(tree) > 0 && overfed_by(net, tree, flow).is_none())
+        .filter(|(tree, system, flow)| count(tree) > 0 && overfed_by(net, tree, system, flow).is_none())
         .map(|(tree, system, flow)| UnitSystem { tree, system, flow })
         .collect();
     // Stable: equal counts keep the model's order.
@@ -294,16 +305,21 @@ mod tests {
         assert_eq!(roots, [(big, "SA2".to_string()), (small, "SA1".to_string())]);
     }
 
-    /// A unit whose terminals take three times its rated flow is not rated,
-    /// and is reported with the healed join the extra air comes through.
+    /// A unit whose terminals take three times its rated flow, the excess
+    /// through unnamed ductwork to an unnamed terminal, is not rated, and is
+    /// reported with the healed join the extra air comes through.
     #[test]
     fn overfed_unit_reported_not_rated() {
         let mut net = Network::default();
         let unit = net.add_node(node(1, NodeKind::Equipment, "SA", Some(0.1)));
         let duct = net.add_node(node(2, NodeKind::DuctNoGeometry, "SA", None));
         let t1 = net.add_node(node(3, NodeKind::Terminal, "SA", Some(0.1)));
-        let main = net.add_node(node(4, NodeKind::DuctNoGeometry, "SA", None));
-        let t2 = net.add_node(node(5, NodeKind::Terminal, "SA", Some(0.2)));
+        let mut main = node(4, NodeKind::DuctNoGeometry, "", None);
+        main.systems.clear();
+        let main = net.add_node(main);
+        let mut t2 = node(5, NodeKind::Terminal, "", Some(0.2));
+        t2.systems.clear();
+        let t2 = net.add_node(t2);
         net.connect(unit, duct, EdgeSource::Recorded);
         net.connect(duct, t1, EdgeSource::Recorded);
         net.connect(duct, main, EdgeSource::TakeoffAxis { candidates: 1 });
@@ -314,5 +330,22 @@ mod tests {
         assert!((o.served - 0.3).abs() < 1e-12 && (o.rated - 0.1).abs() < 1e-12);
         assert_eq!(o.healed_joins.len(), 1);
         assert_eq!((o.healed_joins[0].0, o.healed_joins[0].1), (duct, main));
+    }
+
+    /// Terminals the model puts in the unit's own system are its, though
+    /// they take three times its rated flow: rated, not reported.
+    #[test]
+    fn own_terminals_over_the_rating_rated() {
+        let mut net = Network::default();
+        let unit = net.add_node(node(1, NodeKind::Equipment, "SA", Some(0.1)));
+        let duct = net.add_node(node(2, NodeKind::DuctNoGeometry, "SA", None));
+        let t1 = net.add_node(node(3, NodeKind::Terminal, "SA", Some(0.1)));
+        let t2 = net.add_node(node(4, NodeKind::Terminal, "SA", Some(0.2)));
+        net.connect(unit, duct, EdgeSource::Recorded);
+        net.connect(duct, t1, EdgeSource::OnDuct);
+        net.connect(duct, t2, EdgeSource::OnDuct);
+        assert!(overfed(&net).is_empty());
+        let [u] = unit_systems(&net).try_into().ok().expect("one unit system");
+        assert!((u.flow[unit] - 0.3).abs() < 1e-12);
     }
 }

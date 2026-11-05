@@ -73,6 +73,8 @@ pub enum EdgeSource {
     TakeoffAxis { candidates: usize },
     /// A duct that ends inside an element no recorded join reaches (IFC).
     EndInside,
+    /// A terminal mounted on a duct's side, where its location is.
+    OnDuct,
 }
 
 #[derive(Debug, Clone, Copy)]

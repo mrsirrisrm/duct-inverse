@@ -217,6 +217,7 @@ pub fn analyse_bytes(
         recorded = connectivity(&net);
     }
     let takeoffs = heal::join_takeoffs(&mut net);
+    let on_ducts = heal::join_terminals_on_ducts(&mut net);
     let healed = connectivity(&net);
     let heal_ms = lap();
     // Rooms from the IFC's spaces, in its coordinates; else from the Revit
@@ -511,6 +512,7 @@ pub fn analyse_bytes(
         "recorded": recorded,
         "ifc": ifc,
         "takeoffs": { "found": takeoffs.takeoffs, "joined": takeoffs.joined, "ambiguous": takeoffs.ambiguous, "unmatched": takeoffs.unmatched },
+        "terminals_on_ducts": on_ducts,
         "healed": healed,
         "classified": classified(&net),
         "issues": issues,

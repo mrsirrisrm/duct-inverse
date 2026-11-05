@@ -96,6 +96,44 @@ pub fn join_takeoffs(net: &mut Network) -> TakeoffReport {
     report
 }
 
+/// How far outside a duct's half-size a terminal on its side may stand, m:
+/// its location is its face's, a grille's depth off the duct.
+const FACE_TOL: f64 = 0.15;
+
+/// Join each terminal nothing joins to the duct of its own system whose side
+/// it is mounted on: its location within the duct's half-size and
+/// [`FACE_TOL`] of the axis, between the duct's ends. Revit records an air
+/// terminal on a duct as a tap on the duct's body, which is not read. The
+/// nearest such duct wins; returns how many terminals were joined.
+pub fn join_terminals_on_ducts(net: &mut Network) -> usize {
+    let adj = net.neighbours();
+    let mut found = Vec::new();
+    for (t, node) in net.nodes.iter().enumerate() {
+        let (NodeKind::Terminal, Some(at), true) = (&node.kind, node.location, adj[t].is_empty()) else {
+            continue;
+        };
+        let best = net
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, duct)| duct.systems.iter().any(|s| node.systems.contains(s)))
+            .filter_map(|(d, duct)| {
+                let NodeKind::Duct { start, end, width, height, .. } = duct.kind else {
+                    return None;
+                };
+                let axis = sub(end, start);
+                let s = dot(sub(at, start), axis) / dot(axis, axis).max(1e-12);
+                let off = dist(at, lerp(start, axis, s.clamp(0.0, 1.0)));
+                ((0.0..=1.0).contains(&s) && off <= width.max(height) / 2.0 + FACE_TOL).then_some((off, d))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, d)) = best {
+            found.push((t, d));
+        }
+    }
+    found.into_iter().filter(|&(t, d)| net.connect(t, d, EdgeSource::OnDuct)).count()
+}
+
 fn sub(a: Point, b: Point) -> Point {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -156,6 +194,28 @@ mod tests {
 
     fn duct(id: i64, start: Point, end: Point) -> Node {
         node(id, NodeKind::Duct { start, end, width: 0.4, height: 0.2, round: false }, "", start)
+    }
+
+    /// A grille on a duct's side, 0.25 m off its axis (its half-height 0.1
+    /// and the grille's depth), joins it; one of another system, one past
+    /// the duct's end and one already joined do not.
+    #[test]
+    fn terminals_on_duct_sides() {
+        let mut net = Network::default();
+        let main = net.add_node(duct(1, [0.0, 0.0, 3.0], [10.0, 0.0, 3.0]));
+        let on = net.add_node(node(2, NodeKind::Terminal, "Supply Grille - Curve Face", [4.0, 0.0, 2.75]));
+        let mut other = node(3, NodeKind::Terminal, "Supply Grille - Curve Face", [6.0, 0.0, 2.75]);
+        other.systems = vec!["Supply Air 2".into()];
+        let other = net.add_node(other);
+        let past = net.add_node(node(4, NodeKind::Terminal, "Supply Grille - Curve Face", [10.5, 0.0, 2.75]));
+        let joined = net.add_node(node(5, NodeKind::Terminal, "Supply Grille - Curve Face", [8.0, 0.0, 2.75]));
+        let elsewhere = net.add_node(duct(6, [8.0, 0.0, 2.0], [8.0, 0.0, 2.7]));
+        net.connect(joined, elsewhere, EdgeSource::Recorded);
+        assert_eq!(join_terminals_on_ducts(&mut net), 1);
+        let adj = net.neighbours();
+        assert_eq!(adj[on], [main]);
+        assert!(adj[other].is_empty() && adj[past].is_empty());
+        assert_eq!(adj[joined], [elsewhere]);
     }
 
     /// Main along x, branch leaving along y from the main's side wall, and a
