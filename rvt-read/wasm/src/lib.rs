@@ -131,13 +131,38 @@ fn classified(net: &Network) -> Value {
 
 /// A forward-curved fan's sound power from its flow, TM 5-805-4 (eq. 10-5,
 /// table 10-13): Kw + 10 lg(cfm) + 20 lg(in. wg) + 2 dB blade frequency
-/// increment at 500 Hz, at an assumed 250 Pa (1 in. wg) and peak efficiency.
-/// The table stops at 4 kHz; 8 kHz carries on its slope.
-fn fan_estimate(flow_m3s: f64) -> [f64; N_BANDS] {
+/// increment at 500 Hz, at peak efficiency against `pressure_pa`. The table
+/// stops at 4 kHz; 8 kHz carries on its slope.
+fn fan_estimate(flow_m3s: f64, pressure_pa: f64) -> [f64; N_BANDS] {
     const KW: [f64; N_BANDS] = [47.0, 43.0, 39.0, 36.0, 34.0, 32.0, 28.0, 24.0];
     const BFI: [f64; N_BANDS] = [0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0];
     let cfm = flow_m3s / 0.000_471_947;
-    std::array::from_fn(|i| KW[i] + 10.0 * cfm.log10() + BFI[i])
+    let in_wg = pressure_pa / 249.089;
+    std::array::from_fn(|i| KW[i] + 10.0 * cfm.log10() + 20.0 * in_wg.log10() + BFI[i])
+}
+
+/// The fan pressure assumed for a supply, about 1 in. wg; and for a return
+/// or extract, whose fan works against less ductwork and no terminal
+/// devices, half that.
+const SUPPLY_PA: f64 = 250.0;
+const RETURN_PA: f64 = 125.0;
+
+/// Whether a system draws air from the rooms, by its name: English (Revit's
+/// Exhaust Air is a room's extract), and MagiCAD's Finnish poistoilma.
+fn returns_air(system: &str) -> bool {
+    const WORDS: [&str; 4] = ["return", "exhaust", "extract", "poistoilma"];
+    let name = system.to_lowercase();
+    WORDS.iter().any(|w| name.contains(w))
+}
+
+/// Whether a system's terminals are outside: air discharged (MagiCAD's
+/// jäteilma, coded JI; relief) or drawn in (ulkoilma, UI; outdoor air). It
+/// serves no room.
+fn outside_air(system: &str) -> bool {
+    const WORDS: [&str; 5] = ["jäteilma", "ulkoilma", "relief", "outdoor air", "outside air"];
+    let name = system.to_lowercase();
+    let coded = |code: &str| name.strip_prefix(code).is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+    WORDS.iter().any(|w| name.contains(w)) || coded("ji") || coded("ui")
 }
 
 fn bands(spectrum: impl Iterator<Item = f64>) -> Vec<f64> {
@@ -210,7 +235,7 @@ pub fn analyse_bytes(
     };
 
     let mut issues = issues(&net);
-    let systems = path::unit_systems(&net);
+    let systems: Vec<_> = path::unit_systems(&net).into_iter().filter(|u| !outside_air(&u.system)).collect();
     if systems.is_empty() {
         return Ok(json!({ "recorded": recorded, "ifc": ifc, "healed": healed, "classified": classified(&net), "issues": issues, "path": null }));
     }
@@ -220,7 +245,8 @@ pub fn analyse_bytes(
         .iter()
         .map(|u| {
             let q = u.flow[u.tree.root];
-            (q, source.unwrap_or_else(|| fan_estimate(q)))
+            let pressure = if returns_air(&u.system) { RETURN_PA } else { SUPPLY_PA };
+            (q, source.unwrap_or_else(|| fan_estimate(q, pressure)))
         })
         .collect();
     for (u, &(q_unit, _)) in systems.iter().zip(&units) {
@@ -504,7 +530,8 @@ pub fn analyse_bytes(
         },
         "rooms": rated.iter().take(20).map(&room_json).collect::<Vec<_>>(),
         "assumptions": [
-            if source.is_some() { "source: every unit's sound power as given" } else { "source: each unit's system, supply, return or extract, a forward-curved fan at its flow and 250 Pa (no sound data given)" },
+            if source.is_some() { "source: every unit's sound power as given" } else { "source: each unit's system a forward-curved fan at its flow, 250 Pa for a supply and 125 Pa for a return or extract, by the system's name (no sound data given)" },
+            "systems whose terminals are outside, discharging or drawing in outdoor air by their names, are not rated",
             if revit_rooms { "rooms from the Revit model's MEP spaces, their volume their extent's" } else { "rooms from the IFC's spaces, their volume their extent's" },
             "rooms: a receiver at 1.2 m under each diffuser, every diffuser in the room reaching it by Schultz's equation (a normally furnished room) at its distance; the room rated at its worst receiver",
             "a terminal in no space: rated alone, in 50 m3 at 2 m",
@@ -573,9 +600,26 @@ mod tests {
     /// peak efficiency that is 14 dB (20 lg 2.5 + 6) less.
     #[test]
     fn fan_estimate_reproduces_tm_example() {
-        let lw = super::fan_estimate(20_000.0 * 0.000_471_947);
+        let lw = super::fan_estimate(20_000.0 * 0.000_471_947, 2.5 * 249.089);
         for (got, tm) in lw.iter().zip([104.0, 100.0, 96.0, 95.0, 91.0, 89.0, 85.0]) {
-            assert!((got - (tm - 20.0 * 2.5f64.log10() - 6.0)).abs() < 0.05, "{got} vs {tm}");
+            assert!((got - (tm - 6.0)).abs() < 0.05, "{got} vs {tm}");
+        }
+        // A return's fan at half the pressure, 6 dB less.
+        let (supply, ret) = (super::fan_estimate(1.0, super::SUPPLY_PA), super::fan_estimate(1.0, super::RETURN_PA));
+        assert!(supply.iter().zip(ret).all(|(s, r)| (s - r - 20.0 * 2f64.log10()).abs() < 1e-9));
+    }
+
+    /// The samples' system names: supply, from the rooms, and outside.
+    #[test]
+    fn return_and_extract_systems() {
+        for name in ["Mechanical Return Air 2", "Mechanical Exhaust Air 1", "Poistoilma, asunto 8 (P8)", "Extract 3"] {
+            assert!(super::returns_air(name) && !super::outside_air(name), "{name}");
+        }
+        for name in ["JI6", "UI2", "Jäteilma", "Relief Air 1", "Mechanical Outdoor Air"] {
+            assert!(super::outside_air(name), "{name}");
+        }
+        for name in ["Mechanical Supply Air 1", "Tuloilma, yleiset tilat (T1)", "JIT", "Supply"] {
+            assert!(!super::returns_air(name) && !super::outside_air(name), "{name}");
         }
     }
 }

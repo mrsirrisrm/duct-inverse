@@ -31,11 +31,11 @@ fn revit_alone_rates_as_with_its_ifc() {
     assert_eq!(a["nc"], p["nc"]);
     let kinds = |v: &Value| v["blocks"].as_array().unwrap().iter().map(|b| b["type"].clone()).collect::<Vec<_>>();
     assert_eq!(kinds(a), kinds(p));
-    assert_eq!(kinds(a).len(), 6);
-    // Every room the 22 units serve rates the same.
+    assert_eq!(kinds(a).len(), 16);
+    // Every room the 15 unit systems serve rates the same.
     let rooms = |v: &Value| v["rooms"].as_array().unwrap().iter().map(|r| (r["dominant"]["terminal"].clone(), r["nc"].clone())).collect::<Vec<_>>();
     assert_eq!(rooms(&alone), rooms(&paired));
-    assert_eq!((a["units_rated"].as_u64(), a["terminals_rated"].as_u64()), (Some(22), Some(94)));
+    assert_eq!((a["units_rated"].as_u64(), a["terminals_rated"].as_u64()), (Some(15), Some(87)));
     let bands = |v: &Value| v["receiver_spl_db"].as_array().unwrap().iter().map(|b| b.as_f64().unwrap()).collect::<Vec<_>>();
     for (x, y) in bands(a).iter().zip(bands(p)) {
         assert!((x - y).abs() < 1.0, "{:?} alone, {:?} with the IFC", bands(a), bands(p));
