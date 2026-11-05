@@ -92,6 +92,10 @@ pub struct Network {
     pub covers: HashMap<i64, Covers>,
     /// The Revit model's MEP spaces, in its coordinates, metres.
     pub spaces: Vec<crate::ifc::IfcSpace>,
+    /// Each HVAC system's classification, by name, where the Revit model's
+    /// system type gives it: Revit's `MEPSystemClassification`, 1 supply
+    /// air, 2 return air, 3 exhaust air.
+    pub classifications: HashMap<String, u32>,
 }
 
 impl Network {

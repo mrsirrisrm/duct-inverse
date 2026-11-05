@@ -96,3 +96,23 @@ fn accessories_classify_as_the_ifc() {
     }
     assert_eq!(checked, 66);
 }
+
+/// Each air system's classification, from its Revit type, is what its
+/// MagiCAD name says: tuloilma and ulkoilma or raitisilma (outdoor air) 1,
+/// supply; poistoilma 2, extract, as the transfer system S1; jäteilma (JI)
+/// 3, exhaust.
+#[test]
+fn systems_classified_as_named() {
+    let Some((net, _)) = granlund() else { return };
+    let air: Vec<_> = net.classifications.iter().filter(|(name, _)| !name.is_empty()).collect();
+    assert_eq!(air.len(), 36);
+    for (name, &c) in air {
+        let want = match name.as_str() {
+            n if n.starts_with("Tuloilma") || n.starts_with("Ulkoilma") || n.starts_with("Raitisilma") => 1,
+            n if n.starts_with("Poistoilma") || n == "S1" => 2,
+            n if n.starts_with("JI") => 3,
+            n => panic!("{n}: {c}"),
+        };
+        assert_eq!(c, want, "{name}");
+    }
+}

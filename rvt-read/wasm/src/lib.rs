@@ -245,7 +245,13 @@ pub fn analyse_bytes(
         .iter()
         .map(|u| {
             let q = u.flow[u.tree.root];
-            let pressure = if returns_air(&u.system) { RETURN_PA } else { SUPPLY_PA };
+            // Revit's classification where its system type gives one (2
+            // return air, 3 exhaust air), else the name.
+            let from_rooms = match net.classifications.get(&u.system) {
+                Some(&c) => c == 2 || c == 3,
+                None => returns_air(&u.system),
+            };
+            let pressure = if from_rooms { RETURN_PA } else { SUPPLY_PA };
             (q, source.unwrap_or_else(|| fan_estimate(q, pressure)))
         })
         .collect();
@@ -530,7 +536,7 @@ pub fn analyse_bytes(
         },
         "rooms": rated.iter().take(20).map(&room_json).collect::<Vec<_>>(),
         "assumptions": [
-            if source.is_some() { "source: every unit's sound power as given" } else { "source: each unit's system a forward-curved fan at its flow, 250 Pa for a supply and 125 Pa for a return or extract, by the system's name (no sound data given)" },
+            if source.is_some() { "source: every unit's sound power as given" } else { "source: each unit's system a forward-curved fan at its flow, 250 Pa for a supply and 125 Pa for a return or extract, by the Revit system type's classification, else the system's name (no sound data given)" },
             "systems whose terminals are outside, discharging or drawing in outdoor air by their names, are not rated",
             if revit_rooms { "rooms from the Revit model's MEP spaces, their volume their extent's" } else { "rooms from the IFC's spaces, their volume their extent's" },
             "rooms: a receiver at 1.2 m under each diffuser, every diffuser in the room reaching it by Schultz's equation (a normally furnished room) at its distance; the room rated at its worst receiver",

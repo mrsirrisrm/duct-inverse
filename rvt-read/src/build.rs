@@ -108,6 +108,17 @@ pub fn build<'a>(elements: impl IntoIterator<Item = Element<'a>>, decoded: &Hash
                 _ => None,
             })
             .collect();
+        // A system's classification is keyed by its id, as its name is.
+        for (n, v) in &element.fields {
+            let (Some(system), Field::Num(c)) = (n.strip_prefix("m_mep_classification_"), v) else { continue };
+            let name = element.fields.iter().find_map(|(m, w)| match w {
+                Field::Str(s) if m.strip_prefix("m_mep_system_") == Some(system) && !s.is_empty() => Some(s.to_string()),
+                _ => None,
+            });
+            if let Some(name) = name {
+                net.classifications.insert(name, *c as u32);
+            }
+        }
         joins.extend(element.joined_ids().map(|other| (element.id, other)));
         let extent = match kind {
             NodeKind::Fitting | NodeKind::Equipment => element.point(["m_bboxWidth", "m_bboxDepth", "m_bboxHeight"]),
