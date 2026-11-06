@@ -43,7 +43,8 @@ worker.onmessage = ({ data }) => {
   const p = r.path;
   // What the engineer has to check before trusting the rating, first.
   const issue = i => `<li><b>${i.severity}</b> ${i.message}. Check ${i.check}${(i.joins ?? []).length
-    ? ': ' + i.joins.map(j => `${j.from}–${j.to} (${j.beyond_l_s} L/s beyond)`).join(', ') : ''}.</li>`;
+    ? ': ' + i.joins.map(j => `${j.from}–${j.to} (${j.beyond_l_s} L/s beyond)`).join(', ') : ''}.${i.details
+    ? `<details><summary>each of the ${i.details.length}</summary><ul>${i.details.map(d => `<li>${d}</li>`).join('')}</ul></details>` : ''}</li>`;
   const issues = (r.issues ?? []).length ? `<ul>${r.issues.map(issue).join('')}</ul>` : '';
   if (!p) { out.innerHTML = `${issues}<p>no supply path found</p>`; return; }
   // Each element's share of what sets the room's rating.

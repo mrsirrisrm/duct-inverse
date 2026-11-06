@@ -113,6 +113,33 @@ fn issues(net: &Network) -> Vec<Value> {
         .collect()
 }
 
+/// Repeats of a kind as one issue, in the place of its first: what they share,
+/// every element, and each one's own message under `details`.
+fn grouped(issues: Vec<Value>) -> Vec<Value> {
+    let headline = |kind: &str, n: usize| match kind {
+        "unit_flow_mismatch" => Some(format!("{n} units' Air Flow differs from what their terminals sum to, which the ratings use")),
+        "duct_velocity" => Some(format!("{n} ducts on the worst room's path run over CIBSE Guide B table 5.2's limit above a suspended ceiling for a normal space")),
+        "plenum_unsized" => Some(format!("{n} plenums on the worst room's path have no extent, so their loss is left out")),
+        "fitting_unclassified" => Some(format!("{n} fittings on the worst room's path are of no type the rules know, so they are passed through with neither loss nor noise")),
+        _ => None,
+    };
+    let mut out: Vec<Value> = Vec::new();
+    for issue in &issues {
+        let kind = issue["kind"].as_str().unwrap_or_default();
+        let same: Vec<&Value> = issues.iter().filter(|i| i["kind"] == issue["kind"]).collect();
+        match headline(kind, same.len()).filter(|_| same.len() > 1) {
+            Some(_) if out.iter().any(|i| i["kind"] == issue["kind"]) => {}
+            Some(message) => {
+                let elements: Vec<&Value> = same.iter().flat_map(|i| i["elements"].as_array().into_iter().flatten()).collect();
+                let details: Vec<&Value> = same.iter().map(|i| &i["message"]).collect();
+                out.push(json!({ "kind": kind, "severity": issue["severity"], "elements": elements, "message": message, "check": issue["check"], "details": details }));
+            }
+            None => out.push(issue.clone()),
+        }
+    }
+    out
+}
+
 /// Rule coverage over the fittings, terminals and equipment, by element, and
 /// the distinct names the rules left: the classifier's queue.
 fn classified(net: &Network) -> Value {
@@ -256,20 +283,24 @@ pub fn analyse_bytes(
             (q, source.unwrap_or_else(|| fan_estimate(q, pressure)))
         })
         .collect();
-    for (u, &(q_unit, _)) in systems.iter().zip(&units) {
+    // A unit's Air Flow, where its terminals' sum is more than 5% off it.
+    let mismatched = |u: usize| net.nodes[systems[u].tree.root].flow.filter(|&r| r > 0.0 && (r - units[u].0).abs() > 0.05 * units[u].0);
+    // The furthest out first.
+    let mut off: Vec<(usize, f64)> = (0..systems.len()).filter_map(|u| Some((u, mismatched(u)?))).collect();
+    off.sort_by(|a, b| (units[b.0].0 / b.1).ln().abs().total_cmp(&(units[a.0].0 / a.1).ln().abs()));
+    for (u, rated) in off {
+        let (u, q_unit) = (&systems[u], units[u].0);
         let unit = &net.nodes[u.tree.root];
-        if let Some(rated) = unit.flow.filter(|&r| r > 0.0 && (r - q_unit).abs() > 0.05 * q_unit) {
-            issues.push(json!({
-                "kind": "unit_flow_mismatch",
-                "severity": "warning",
-                "elements": [unit.id],
-                "message": format!(
-                    "unit {} Air Flow is {:.0} L/s; its {} terminals sum to {:.0} L/s, which the rating uses",
-                    unit.id, rated * 1000.0, u.system, q_unit * 1000.0
-                ),
-                "check": "the unit's Air Flow and its terminals' design flows",
-            }));
-        }
+        issues.push(json!({
+            "kind": "unit_flow_mismatch",
+            "severity": "warning",
+            "elements": [unit.id],
+            "message": format!(
+                "unit {} Air Flow is {:.0} L/s; its {} terminals sum to {:.0} L/s, which the rating uses",
+                unit.id, rated * 1000.0, u.system, q_unit * 1000.0
+            ),
+            "check": "the unit's Air Flow and its terminals' design flows",
+        }));
     }
     let params = |unit: usize, mapped: &[chain::Mapped], room_volume_m3: f64, receiver_distance_m: f64| Params {
         source_type: SourceType::Given(units[unit].1),
@@ -423,6 +454,22 @@ pub fn analyse_bytes(
     let (u, terminal) = (*u, *terminal);
     let unit = &net.nodes[systems[u].tree.root];
     let q_unit = units[u].0;
+    // The rating rests on the flows: with the unit's own, regenerated noise
+    // would be 55 lg of their ratio away.
+    if let Some(rated) = mismatched(u) {
+        let at = issues.iter().position(|i| i["severity"] != "error").unwrap_or(issues.len());
+        issues.insert(at, json!({
+            "kind": "worst_room_flow_mismatch",
+            "severity": "warning",
+            "elements": [unit.id],
+            "message": format!(
+                "the worst room, {}, is rated at the {:.0} L/s its terminals sum to, through unit {} whose Air Flow is {:.0} L/s: its rating depends on which is right",
+                room.space.map_or("a terminal in no space".to_string(), |k| spaces[k].name.clone()),
+                q_unit * 1000.0, unit.id, rated * 1000.0
+            ),
+            "check": "the system's terminal flows, the unit's Air Flow and the duct sizes they imply",
+        }));
+    }
     let path_ms = lap();
     for &n in path {
         let node = &net.nodes[n];
@@ -515,7 +562,7 @@ pub fn analyse_bytes(
         "terminals_on_ducts": on_ducts,
         "healed": healed,
         "classified": classified(&net),
-        "issues": issues,
+        "issues": grouped(issues),
         "path": {
             "unit": { "id": unit.id, "family": unit.family, "air_flow_l_s": unit.flow.map(|q| q * 1000.0) },
             "system": systems[u].system,
@@ -591,6 +638,22 @@ pub fn analyse(bytes: Option<Vec<u8>>, ifc: Option<Vec<u8>>, lw: Option<Vec<f64>
 
 #[cfg(test)]
 mod tests {
+    /// Repeats of a kind become one issue in its first's place, with every
+    /// element and message; a lone one, and an overfed unit with its joins,
+    /// stay as they are.
+    #[test]
+    fn repeated_issues_grouped() {
+        let issue = |kind: &str, id: i64| serde_json::json!({ "kind": kind, "severity": "warning", "elements": [id], "message": format!("m{id}"), "check": "c" });
+        let lone = issue("duct_velocity", 4);
+        let overfed = [issue("unit_overfed", 5), issue("unit_overfed", 6)];
+        let out = super::grouped(vec![overfed[0].clone(), issue("unit_flow_mismatch", 1), lone.clone(), issue("unit_flow_mismatch", 2), overfed[1].clone()]);
+        assert_eq!(out.len(), 4);
+        assert_eq!((&out[0], &out[2], &out[3]), (&overfed[0], &lone, &overfed[1]));
+        assert_eq!(out[1]["elements"], serde_json::json!([1, 2]));
+        assert_eq!(out[1]["details"], serde_json::json!(["m1", "m2"]));
+        assert!(out[1]["message"].as_str().unwrap().starts_with("2 units'"));
+    }
+
     /// Table 5.2 above a suspended ceiling: rectangular 3, 5 and 6 m/s, round
     /// 5, 7 and 10; a main 50 % more.
     #[test]
