@@ -54,8 +54,7 @@ fn insulation_matches_the_ifc() {
 }
 
 /// A straight Revit sizes is the IFC's extrusion: its section to 2 mm and
-/// its length to 10 mm. 697 of the 701 are: along an axis, or round and
-/// sloping; the 4 left are rectangular and off the axes.
+/// its length to 10 mm. All 701 are.
 #[test]
 fn ducts_match_the_ifc() {
     let Some((net, elements)) = granlund() else { return };
@@ -73,7 +72,7 @@ fn ducts_match_the_ifc() {
         assert!((0..2).all(|k| (ours[k] - theirs[k]).abs() < 0.002), "{:?}: {ours:?} for {theirs:?}", e.tag);
         assert!((d(s, t) - d(start, end)).abs() < 0.01, "{:?}: {} m for {} m", e.tag, d(s, t), d(start, end));
     }
-    assert_eq!((straights, sized), (701, 697));
+    assert_eq!((straights, sized), (701, 701));
 }
 
 /// From their Revit parameters alone, dampers and silencers are what the

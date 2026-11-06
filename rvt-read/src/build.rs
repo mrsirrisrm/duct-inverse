@@ -121,7 +121,7 @@ pub fn build<'a>(elements: impl IntoIterator<Item = Element<'a>>, decoded: &Hash
         }
         joins.extend(element.joined_ids().map(|other| (element.id, other)));
         let extent = match kind {
-            NodeKind::Fitting | NodeKind::Equipment => element.point(["m_bboxWidth", "m_bboxDepth", "m_bboxHeight"]),
+            NodeKind::Fitting | NodeKind::Equipment | NodeKind::DuctNoGeometry => element.point(["m_bboxWidth", "m_bboxDepth", "m_bboxHeight"]),
             _ => None,
         };
         net.add_node(Node {

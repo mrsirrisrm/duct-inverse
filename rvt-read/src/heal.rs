@@ -134,6 +134,60 @@ pub fn join_terminals_on_ducts(net: &mut Network) -> usize {
     found.into_iter().filter(|&(t, d)| net.connect(t, d, EdgeSource::OnDuct)).count()
 }
 
+/// Join each flex or other run with no decoded geometry, loose at one end, to
+/// the duct of its own system its box reaches: within half the duct's size
+/// plus [`FACE_TOL`] of its axis, and not already on the same island. A flex
+/// tapped into a duct's side records nothing at that end, as a terminal on a
+/// duct does ([`join_terminals_on_ducts`]). Returns how many joined.
+pub fn join_runs_on_ducts(net: &mut Network) -> usize {
+    let adj = net.neighbours();
+    let island = crate::graph::islands(net);
+    let mut found = Vec::new();
+    for (r, run) in net.nodes.iter().enumerate() {
+        let (NodeKind::DuctNoGeometry, Some(at), Some(extent), true) = (&run.kind, run.location, run.extent, adj[r].len() <= 1) else {
+            continue;
+        };
+        let best = net
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|&(d, duct)| island[d] != island[r] && duct.systems.iter().any(|s| run.systems.contains(s)))
+            .filter_map(|(d, duct)| {
+                let NodeKind::Duct { start, end, width, height, .. } = duct.kind else {
+                    return None;
+                };
+                let off = segment_to_box(start, end, at, extent);
+                (off <= width.max(height) / 2.0 + FACE_TOL).then_some((off, d))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, d)) = best {
+            found.push((r, d));
+        }
+    }
+    found.into_iter().filter(|&(r, d)| net.connect(r, d, EdgeSource::OnDuct)).count()
+}
+
+/// The least distance from a segment to a box of the given centre and extent:
+/// it is convex along the segment.
+fn segment_to_box(start: Point, end: Point, centre: Point, extent: Point) -> f64 {
+    let axis = sub(end, start);
+    let off = |s: f64| {
+        let p = lerp(start, axis, s);
+        let outside: Point = std::array::from_fn(|k| ((p[k] - centre[k]).abs() - extent[k] / 2.0).max(0.0));
+        norm(outside)
+    };
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..60 {
+        let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+        if off(a) <= off(b) {
+            hi = b;
+        } else {
+            lo = a;
+        }
+    }
+    off((lo + hi) / 2.0)
+}
+
 fn sub(a: Point, b: Point) -> Point {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -216,6 +270,30 @@ mod tests {
         assert_eq!(adj[on], [main]);
         assert!(adj[other].is_empty() && adj[past].is_empty());
         assert_eq!(adj[joined], [elsewhere]);
+    }
+
+    #[test]
+    fn flex_runs_tapped_into_ducts() {
+        let run = |id, location: Point, extent: Point| {
+            let mut n = node(id, NodeKind::DuctNoGeometry, "", location);
+            n.extent = Some(extent);
+            n
+        };
+        let mut net = Network::default();
+        let main = net.add_node(duct(1, [0.0, 0.0, 3.0], [10.0, 0.0, 3.0]));
+        // Its box from the main's underside down to the diffuser below it.
+        let flex = net.add_node(run(2, [4.0, 0.3, 2.3], [0.6, 0.6, 0.8]));
+        let diffuser = net.add_node(node(3, NodeKind::Terminal, "Supply Diffuser", [4.0, 0.5, 1.9]));
+        net.connect(flex, diffuser, EdgeSource::Recorded);
+        // Too far below it, and of another system.
+        let far = net.add_node(run(4, [6.0, 0.0, 1.0], [0.6, 0.6, 0.8]));
+        let mut other = run(5, [8.0, 0.0, 2.5], [0.6, 0.6, 0.8]);
+        other.systems = vec!["Supply Air 2".into()];
+        let other = net.add_node(other);
+        assert_eq!(join_runs_on_ducts(&mut net), 1);
+        let adj = net.neighbours();
+        assert!(adj[flex].contains(&main));
+        assert!(adj[far].is_empty() && adj[other].is_empty());
     }
 
     /// Main along x, branch leaving along y from the main's side wall, and a

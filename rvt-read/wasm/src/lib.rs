@@ -244,6 +244,7 @@ pub fn analyse_bytes(
         recorded = connectivity(&net);
     }
     let takeoffs = heal::join_takeoffs(&mut net);
+    let runs_on_ducts = heal::join_runs_on_ducts(&mut net);
     let on_ducts = heal::join_terminals_on_ducts(&mut net);
     let healed = connectivity(&net);
     let heal_ms = lap();
@@ -560,6 +561,7 @@ pub fn analyse_bytes(
         "ifc": ifc,
         "takeoffs": { "found": takeoffs.takeoffs, "joined": takeoffs.joined, "ambiguous": takeoffs.ambiguous, "unmatched": takeoffs.unmatched },
         "terminals_on_ducts": on_ducts,
+        "runs_on_ducts": runs_on_ducts,
         "healed": healed,
         "classified": classified(&net),
         "issues": grouped(issues),
