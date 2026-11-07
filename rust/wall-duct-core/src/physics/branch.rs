@@ -20,6 +20,20 @@ pub struct Outlets {
     pub total_m2: f64,
 }
 
+/// What sets a junction's own noise, beyond the main and the flow the path
+/// takes ([`crate::physics::regenerative::junction_pwl_db`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Junction {
+    /// The side branch's area, m²: the path's own outlet, unless it carries on
+    /// along the main. Without a duct to size it, the main's.
+    pub side_m2: Option<f64>,
+    /// Where the path carries on along the main, the share of the arriving
+    /// flow that leaves by the side branch.
+    pub side_flow_ratio: Option<f64>,
+    /// A damper, elbow or take-off within 5 main diameters upstream.
+    pub turbulent: bool,
+}
+
 /// Cut-on of a duct `width` x `height`, or round of diameter `width`.
 pub fn cut_on_hz(width_m: f64, height_m: f64, round: bool) -> f64 {
     if round { 0.586 * C_AIR / width_m } else { C_AIR / (2.0 * width_m.max(height_m)) }

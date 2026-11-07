@@ -33,9 +33,9 @@ use crate::physics::{
     elbow::{elbow_loss_db, ElbowKind},
     duct_attenuation::{segment_attenuation_db, LinedFit},
     end_reflection::{effective_diameter_rectangular, end_reflection_loss_db, Termination},
-    branch::{branch_change_db, cut_on_hz, Outlets},
+    branch::{branch_change_db, cut_on_hz, Junction, Outlets},
     plenum::{plenum_loss_db, Openings},
-    regenerative::{cibse_fitting_pwl_db, fitting_pwl_db, terminal_pwl_db},
+    regenerative::{cibse_fitting_pwl_db, fitting_pwl_db, junction_pwl_db, terminal_pwl_db},
     room::receiver_spl,
     source::{source_pwl, SourceType},
     sub_bands,
@@ -69,9 +69,6 @@ pub const fn block_slot_base(k: usize) -> usize {
 
 type DualN = Dual<N_PARAMS>;
 type Band = [DualN; N_BANDS];
-
-/// A 90° tee's regen datum level, Woods' table 5.2.
-const TEE_K_DB: f64 = 55.0;
 
 /// A damper's regen datum level, Woods' table 5.2: 44 dB open, 53 at 15°
 /// closed, 65 at 45°; linear between.
@@ -145,7 +142,7 @@ pub enum BlockParams {
         alpha: [f64; N_BANDS],
     },
     /// Branch division: the path continues with `flow_ratio` of the flow
-    /// arriving, plus the tee's own noise at the speed in the main it leaves
+    /// arriving, plus the junction's own noise (ASHRAE) off the main
     /// (`width_m` × `height_m`). With the junction's `outlets` the power
     /// divides by area, with its reflection (ASHRAE); else by flow.
     Branch {
@@ -154,6 +151,7 @@ pub enum BlockParams {
         height_m: f64,
         round: bool,
         outlets: Option<Outlets>,
+        junction: Junction,
     },
 }
 
@@ -236,6 +234,7 @@ pub enum Block {
         main_area_m2: f64,
         /// The change by area, where the outlets are known.
         by_area: Option<[f64; N_BANDS]>,
+        junction: Junction,
     },
 }
 
@@ -302,12 +301,13 @@ impl Block {
                 openings,
                 alpha,
             },
-            BlockParams::Branch { flow_ratio, width_m, height_m, round, outlets } => {
+            BlockParams::Branch { flow_ratio, width_m, height_m, round, outlets, junction } => {
                 let main_area_m2 = section_area(DualN::constant(width_m), DualN::constant(height_m), round).value;
                 Self::Branch {
                     log_flow_ratio: v(flow_ratio.ln(), 0),
                     main_area_m2,
                     by_area: outlets.map(|o| branch_change_db(&o, main_area_m2, cut_on_hz(width_m, height_m, round))),
+                    junction,
                 }
             }
         }
@@ -403,7 +403,7 @@ impl Block {
             Self::Plenum { log_length, log_width, log_height, openings, alpha } => {
                 sub_bands(pwl_in, &plenum_loss_db(log_length.exp(), log_width.exp(), log_height.exp(), openings, alpha))
             }
-            Self::Branch { log_flow_ratio, main_area_m2, by_area } => {
+            Self::Branch { log_flow_ratio, main_area_m2, by_area, junction } => {
                 // By area where the outlets are known; else in proportion to
                 // flow, 10 log10(ratio) as 10 / ln 10 · ln(ratio).
                 let by_flow = *log_flow_ratio * (10.0 / std::f64::consts::LN_10);
@@ -415,9 +415,21 @@ impl Block {
                     };
                 }
                 // `q` is the flow leaving; the main carried q / ratio.
-                let area = DualN::constant(*main_area_m2);
-                let main_speed = q / log_flow_ratio.exp() / area;
-                db_add(&out, &fitting_pwl_db(DualN::constant(TEE_K_DB), main_speed, area))
+                let main = q / log_flow_ratio.exp();
+                let main_speed = main / DualN::constant(*main_area_m2);
+                let side_m2 = junction.side_m2.unwrap_or(*main_area_m2);
+                let side_area = DualN::constant(side_m2);
+                let mut regen = match junction.side_flow_ratio {
+                    None => junction_pwl_db(main_speed, q / side_area, side_area, junction.turbulent),
+                    Some(side) => junction_pwl_db(main_speed, main * side / side_area, side_area, junction.turbulent),
+                };
+                // Carrying on along the main, the take-off's noise there:
+                // 20 lg(D_M / D_B) above the branch's (Strutt, SRL).
+                if junction.side_flow_ratio.is_some() {
+                    let to_main = 10.0 * (*main_area_m2 / side_m2).log10();
+                    regen = regen.map(|band| band + to_main);
+                }
+                db_add(&out, &regen)
             }
         }
     }
@@ -726,7 +738,7 @@ mod tests {
         };
         let diffuser = BlockParams::Diffuser { width_m: 20.0, height_m: 20.0, round: false, lw_db: None, termination: Termination::Flush };
         let whole = DuctSystem::from_params(&chain(vec![diffuser])).diffuser_pwl();
-        let half = DuctSystem::from_params(&chain(vec![BlockParams::Branch { flow_ratio: 0.5, width_m: 20.0, height_m: 20.0, round: false, outlets: None }, diffuser]))
+        let half = DuctSystem::from_params(&chain(vec![BlockParams::Branch { flow_ratio: 0.5, width_m: 20.0, height_m: 20.0, round: false, outlets: None, junction: Default::default() }, diffuser]))
             .diffuser_pwl();
         for i in 0..N_BANDS {
             assert_relative_eq!(whole[i].value - half[i].value, 10.0 * 2.0f64.log10(), max_relative = 1e-4);
@@ -748,7 +760,7 @@ mod tests {
             blocks: vec![
                 BlockParams::Segment { length_m: 3.0, width_m: 0.4, height_m: 0.3, lining_m: 0.025, round: false, wrapped: false },
                 BlockParams::Bend { width_m: 0.4, height_m: 0.3, kind: ElbowKind::Mitred, lined: false, round: false, zeta: None },
-                BlockParams::Branch { flow_ratio: 0.5, width_m: 0.4, height_m: 0.3, round: false, outlets: None },
+                BlockParams::Branch { flow_ratio: 0.5, width_m: 0.4, height_m: 0.3, round: false, outlets: None, junction: Default::default() },
                 BlockParams::Damper { width_m: 0.3, height_m: 0.3, closed_deg: 15.0, round: false },
                 BlockParams::Diffuser { width_m: 0.3, height_m: 0.3, round: false, lw_db: None, termination: Termination::Flush },
             ],

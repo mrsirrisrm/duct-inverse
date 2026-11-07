@@ -7,7 +7,7 @@ use duct_heal::classify::{classify_node, ElementType};
 use duct_heal::{Network, NodeKind};
 use wall_duct_core::model::BlockParams;
 use wall_duct_core::physics::elbow::ElbowKind;
-use wall_duct_core::physics::branch::Outlets;
+use wall_duct_core::physics::branch::{Junction, Outlets};
 use wall_duct_core::physics::end_reflection::Termination;
 use wall_duct_core::physics::plenum::Openings;
 
@@ -128,6 +128,55 @@ fn outlets(net: &Network, children: &[Vec<usize>], flow: &[f64], junction: usize
     Some(Outlets { branch_m2: area(section_below(net, children, branch)?), total_m2 })
 }
 
+/// A damper, elbow or earlier take-off within 5 main diameters upstream of
+/// `path[i]`, whose noise the junction there adds to (ASHRAE). The junction's
+/// own tee, just before it, does not count.
+fn turbulent_upstream(net: &Network, path: &[usize], flow: &[f64], i: usize, main_diameter_m: f64) -> bool {
+    let mut walked = 0.0;
+    for j in (1..i).rev() {
+        let node = &net.nodes[path[j]];
+        if flow[path[j]] < flow[path[j - 1]] * (1.0 - 1e-9) {
+            return true;
+        }
+        match node.kind {
+            NodeKind::Duct { start, end, .. } => walked += dist(start, end),
+            NodeKind::Fitting => match classify_node(node) {
+                Some(ElementType::TeeOrWye | ElementType::BranchTakeoff) if j == i - 1 => {}
+                Some(
+                    ElementType::ElbowMitred
+                    | ElementType::ElbowMitredVanes
+                    | ElementType::ElbowRadius
+                    | ElementType::TeeOrWye
+                    | ElementType::BranchTakeoff
+                    | ElementType::VolumeDamper
+                    | ElementType::FireSmokeDamper
+                    | ElementType::VavTerminalUnit,
+                ) => return true,
+                _ => {}
+            },
+            _ => {}
+        }
+        if walked > 5.0 * main_diameter_m {
+            return false;
+        }
+    }
+    false
+}
+
+/// What sets the noise of the junction at `path[i]`. The outlet carrying the
+/// most is the main carrying on; of the others the largest is its side
+/// branch, and a path that takes neither is on a side branch of its own.
+fn junction_at(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>], i: usize, main: Option<Section>) -> Junction {
+    let (prev, n) = (path[i - 1], path[i]);
+    let side = children[prev].iter().copied().filter(|&c| c != n && flow[c] > 0.0).max_by(|&a, &b| flow[a].total_cmp(&flow[b]));
+    let (side_m2, side_flow_ratio) = match side.filter(|&s| flow[s] < flow[n]) {
+        Some(s) => (section_below(net, children, s).map(area), Some(flow[s] / flow[prev])),
+        None => (section_below(net, children, n).map(area), None),
+    };
+    let turbulent = main.is_some_and(|m| turbulent_upstream(net, path, flow, i, (4.0 * area(m) / std::f64::consts::PI).sqrt()));
+    Junction { side_m2, side_flow_ratio, turbulent }
+}
+
 /// A block and the element it came from, for the report.
 pub struct Mapped {
     pub block: BlockParams,
@@ -154,7 +203,7 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>
                 None => "by flow".into(),
             };
             push(
-                BlockParams::Branch { flow_ratio: flow[n] / flow[prev], width_m, height_m, round, outlets },
+                BlockParams::Branch { flow_ratio: flow[n] / flow[prev], width_m, height_m, round, outlets, junction: junction_at(net, path, flow, children, i, main) },
                 format!("{:.0} -> {:.0} L/s, {by}", flow[prev] * 1000.0, flow[n] * 1000.0),
             );
         }

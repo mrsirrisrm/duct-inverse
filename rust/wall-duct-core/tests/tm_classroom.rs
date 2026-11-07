@@ -59,13 +59,14 @@ fn room() {
 /// within 3.5 dB of TM's in every band (51 47 35 25 29 29 12). TM just meets
 /// NC 30 there; the engine rates 31. Pinned: change it only for a change of
 /// method, with the reason. (Was 51.2 50.1 34.6 24.5 28.3 27.4 10.5, NC 33,
-/// before the lined round drop took CIBSE's table 5.5 for the bare duct's.)
+/// before the lined round drop took CIBSE's table 5.5 for the bare duct's;
+/// and 9.8 at 4 kHz before tees' own noise went from Woods' to ASHRAE's.)
 #[test]
 fn full_path_with_catalogue_diffuser() {
     let sys = DuctSystem::from_params(&params(Some(DIFFUSER_LW)));
     let spl = sys.receiver_spl_values();
     (0..7).for_each(|i| within(&format!("Lp vs TM, band {i}"), spl[i], LP_ONE_TM[i], 3.5));
-    let pinned = [50.4, 48.4, 32.6, 24.2, 28.2, 27.3, 9.8];
+    let pinned = [50.4, 48.4, 32.6, 24.2, 28.2, 27.3, 9.5];
     (0..7).for_each(|i| within(&format!("Lp, band {i}"), spl[i], pinned[i], 0.1));
     assert_eq!(sys.nc(), 31);
 }
@@ -91,7 +92,7 @@ fn full_path_with_ari_lining() {
     let sys = DuctSystem::from_params(&p);
     let spl = sys.receiver_spl_values();
     (0..7).for_each(|i| within(&format!("Lp vs TM, band {i}"), spl[i], LP_ONE_TM[i], 3.5));
-    let pinned = [50.4, 47.2, 33.0, 24.2, 28.2, 27.3, 9.8];
+    let pinned = [50.4, 47.2, 33.0, 24.2, 28.2, 27.3, 9.5];
     (0..7).for_each(|i| within(&format!("Lp, band {i}"), spl[i], pinned[i], 0.1));
     assert_eq!(sys.nc(), 30);
 }

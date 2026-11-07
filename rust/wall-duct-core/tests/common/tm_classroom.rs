@@ -80,12 +80,13 @@ pub fn params(diffuser_lw: Option<[f64; 8]>) -> Params {
         round: false,
         zeta: None,
     };
-    let branch = |flow_ratio: f64, w_in: f64, h_in: f64| BlockParams::Branch {
+    let branch = |flow_ratio: f64, w_in: f64, h_in: f64, side_m2: f64| BlockParams::Branch {
         flow_ratio,
         width_m: w_in * IN,
         height_m: h_in * IN,
         round: false,
         outlets: None,
+        junction: wall_duct_core::physics::branch::Junction { side_m2: Some(side_m2), ..Default::default() },
     };
     Params {
         source_type: SourceType::Given(FAN_LW),
@@ -98,13 +99,13 @@ pub fn params(diffuser_lw: Option<[f64; 8]>) -> Params {
             elbow(24.0, 60.0),
             lined(20.0, 24.0, 60.0, false),
             elbow(60.0, 24.0),
-            branch(BRANCH_RATIOS[0], 24.0, 60.0),
+            branch(BRANCH_RATIOS[0], 24.0, 60.0, 12.0 * 24.0 * IN * IN),
             lined(9.0, 12.0, 24.0, false),
-            branch(BRANCH_RATIOS[1], 12.0, 24.0),
+            branch(BRANCH_RATIOS[1], 12.0, 24.0, 12.0 * 16.0 * IN * IN),
             elbow(24.0, 12.0),
             lined(10.0, 12.0, 16.0, false),
             elbow(16.0, 12.0),
-            branch(BRANCH_RATIOS[2], 12.0, 16.0),
+            branch(BRANCH_RATIOS[2], 12.0, 16.0, std::f64::consts::FRAC_PI_4 * 100.0 * IN * IN),
             lined(3.0, 10.0, 10.0, true),
             BlockParams::Diffuser {
                 width_m: 10.0 * IN,

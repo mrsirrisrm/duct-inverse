@@ -61,6 +61,7 @@ pub fn params() -> Params {
         height_m: h,
         round: false,
         outlets: Some(Outlets { branch_m2: b, total_m2: total }),
+        junction: wall_duct_core::physics::branch::Junction { side_m2: Some(b), ..Default::default() },
     };
     Params {
         source_type: SourceType::Given(FAN_LW),
