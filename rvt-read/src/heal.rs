@@ -6,8 +6,9 @@ use crate::network::{EdgeSource, Network, NodeKind, Point};
 const AXIS_TOL: f64 = 0.02;
 /// Largest |cos| between branch and main axes still counted as a side branch.
 const PERP_TOL: f64 = 0.1;
-/// The takeoff must sit within this many main-duct sizes of the main's axis.
-const REACH: f64 = 4.0;
+/// The takeoff must sit within this many main-duct sizes of the main's axis:
+/// on rme's 287 joins, at most 0.91 (on its wall, its own depth out).
+const REACH: f64 = 1.5;
 
 pub fn is_takeoff(family: &str) -> bool {
     let f = family.to_ascii_lowercase();
@@ -27,7 +28,8 @@ pub struct TakeoffReport {
 ///
 /// Revit records only a takeoff's branch connector; the tap onto the main is
 /// implicit. A takeoff with more than one join already has its main. The main is the duct whose centreline the branch duct's axis runs
-/// into, square to it, near the takeoff. Where several qualify (stacked or
+/// into, square to it, near the takeoff; between level ducts, anywhere a
+/// branch flush with the main's top or bottom would put it. Where several qualify (stacked or
 /// parallel mains), one sharing a system name wins, then the nearest.
 pub fn join_takeoffs(net: &mut Network) -> TakeoffReport {
     let mut report = TakeoffReport::default();
@@ -46,15 +48,16 @@ pub fn join_takeoffs(net: &mut Network) -> TakeoffReport {
         let (Some(at), Some(branch)) = (
             node.location,
             adj[t].iter().find_map(|&b| match net.nodes[b].kind {
-                NodeKind::Duct { start, end, .. } => Some((b, start, end)),
+                NodeKind::Duct { start, end, height, .. } => Some((b, start, end, height)),
                 _ => None,
             }),
         ) else {
             report.unmatched.push(node.id);
             continue;
         };
-        let (b, b_start, b_end) = branch;
+        let (b, b_start, b_end, b_height) = branch;
         let b_dir = sub(b_end, b_start);
+        let level = |d: Point| d[2].abs() < PERP_TOL * norm(d);
 
         let mut candidates: Vec<(bool, f64, usize)> = net
             .nodes
@@ -69,7 +72,10 @@ pub fn join_takeoffs(net: &mut Network) -> TakeoffReport {
                 let cos = dot(b_dir, m_dir).abs() / (norm(b_dir) * norm(m_dir)).max(1e-12);
                 let (gap, s) = line_to_segment(b_start, b_dir, start, m_dir)?;
                 let near = dist(at, lerp(start, m_dir, s));
-                (cos < PERP_TOL && gap < AXIS_TOL && near < REACH * width.max(height)).then(|| {
+                // Level ducts: a branch flush with a deeper main's top or
+                // bottom runs half their heights' difference off its axis.
+                let flush = if level(b_dir) && level(m_dir) { (height - b_height).max(0.0) / 2.0 } else { 0.0 };
+                (cos < PERP_TOL && gap < AXIS_TOL + flush && near < REACH * width.max(height)).then(|| {
                     let shared = main.systems.iter().any(|s| node.systems.contains(s));
                     (!shared, near, m)
                 })
@@ -313,6 +319,19 @@ mod tests {
         let (mut net, takeoff, main) = tee();
         let report = join_takeoffs(&mut net);
         assert_eq!(report, TakeoffReport { takeoffs: 1, joined: 1, ambiguous: 0, unmatched: vec![] });
+        let e = net.edges.last().unwrap();
+        assert_eq!((e.a, e.b), (takeoff, main));
+    }
+
+    /// A 200 mm high branch flush with the top of a 300 mm main runs 50 mm
+    /// above its axis, and joins it.
+    #[test]
+    fn takeoff_flush_with_a_deeper_mains_top() {
+        let (mut net, takeoff, main) = tee();
+        net.nodes[main].kind = NodeKind::Duct { start: [0.0; 3], end: [10.0, 0.0, 0.0], width: 0.4, height: 0.3, round: false };
+        net.nodes[2].kind = NodeKind::Duct { start: [5.0, 0.3, 0.05], end: [5.0, 3.0, 0.05], width: 0.4, height: 0.2, round: false };
+        let report = join_takeoffs(&mut net);
+        assert_eq!((report.joined, report.unmatched), (1, vec![]));
         let e = net.edges.last().unwrap();
         assert_eq!((e.a, e.b), (takeoff, main));
     }
