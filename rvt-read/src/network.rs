@@ -98,6 +98,9 @@ pub struct Network {
     /// system type gives it: Revit's `MEPSystemClassification`, 1 supply
     /// air, 2 return air, 3 exhaust air.
     pub classifications: HashMap<String, u32>,
+    /// Each terminal's neck where its parameters or type name give it, by
+    /// id: width, height (metres), round.
+    pub necks: HashMap<i64, (f64, f64, bool)>,
 }
 
 impl Network {

@@ -25,6 +25,8 @@ pub struct Element<'a> {
     pub fields: Vec<(&'a str, Field<'a>)>,
     pub flow_cfs: Option<f64>,
     pub description: String,
+    /// A terminal's neck from its parameters, feet: width, height, round.
+    pub neck_ft: Option<(f64, f64, bool)>,
 }
 
 fn kind_of(class: &str) -> Option<NodeKind> {
@@ -124,6 +126,15 @@ pub fn build<'a>(elements: impl IntoIterator<Item = Element<'a>>, decoded: &Hash
             NodeKind::Fitting | NodeKind::Equipment | NodeKind::DuctNoGeometry => element.point(["m_bboxWidth", "m_bboxDepth", "m_bboxHeight"]),
             _ => None,
         };
+        if kind == NodeKind::Terminal {
+            let neck = element
+                .neck_ft
+                .map(|(w, h, round)| (w * FT, h * FT, round))
+                .or_else(|| neck_from_type_name(&element.str("m_type_name")));
+            if let Some(neck) = neck {
+                net.necks.insert(element.id, neck);
+            }
+        }
         net.add_node(Node {
             id: element.id,
             kind,
@@ -180,9 +191,68 @@ pub fn description_from_parameters<'v>(parameters: impl IntoIterator<Item = &'v 
     found.join(" ")
 }
 
+/// A terminal's neck, the duct it takes, from its family's Duct Width and
+/// Duct Height, feet. Not its Duct Diameter: on a grille made to sit on a
+/// round duct's side that is the duct's (Snowdon's "16x4 Connection 8
+/// Diameter Duct": Duct Width 16 in, Duct Height 4 in, Duct Diameter 8 in).
+pub fn neck_from_parameters<'v>(parameters: impl IntoIterator<Item = &'v serde_json::Value>) -> Option<(f64, f64, bool)> {
+    let (mut w, mut h) = (None, None);
+    for p in parameters {
+        match p["name"].as_str() {
+            Some("Duct Width") => w = p["value"].as_f64(),
+            Some("Duct Height") => h = p["value"].as_f64(),
+            _ => {}
+        }
+    }
+    let (w, h) = (w.filter(|&v| v > 0.0)?, h.filter(|&v| v > 0.0)?);
+    Some((w, h, false))
+}
+
+/// A terminal's neck from its metric type name, metres: "W x H Connection"
+/// rectangular, "D Neck" round, in millimetres ("600 x 600 Face 300 x 300
+/// Connection", "600x600 - 250 Neck"). A size under 50 mm is not taken:
+/// an imperial name's inches.
+pub fn neck_from_type_name(name: &str) -> Option<(f64, f64, bool)> {
+    let tokens: Vec<String> = name.replace(['x', 'X', '×'], " x ").split_whitespace().map(str::to_lowercase).collect();
+    let mm = |t: &str| t.parse::<f64>().ok().filter(|&v| v >= 50.0).map(|v| v / 1000.0);
+    let at = |word: &str| tokens.iter().position(|t| t == word);
+    if let Some(i) = at("connection").filter(|&i| i >= 3 && tokens[i - 2] == "x") {
+        return Some((mm(&tokens[i - 3])?, mm(&tokens[i - 1])?, false));
+    }
+    let i = at("neck").filter(|&i| i >= 1)?;
+    let d = mm(&tokens[i - 1])?;
+    Some((d, d, true))
+}
+
 pub fn flow_from_parameters<'v>(parameters: impl IntoIterator<Item = &'v serde_json::Value>) -> Option<f64> {
     parameters.into_iter().find_map(|p| match p["name"].as_str() {
         Some("Flow" | "Air Flow") => p["value"].as_f64(),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn neck_from_duct_width_and_height_not_diameter() {
+        let p = serde_json::json!([
+            {"name": "Duct Width", "value": 1.3333333333333333},
+            {"name": "Duct Height", "value": 0.3333333333333333},
+            {"name": "Duct Diameter", "value": 0.6666666666666666},
+        ]);
+        assert_eq!(neck_from_parameters(p.as_array().unwrap()), Some((1.3333333333333333, 0.3333333333333333, false)));
+        let diameter_only = serde_json::json!([{"name": "Duct Diameter", "value": 0.5}]);
+        assert_eq!(neck_from_parameters(diameter_only.as_array().unwrap()), None);
+    }
+
+    #[test]
+    fn neck_from_metric_type_names() {
+        assert_eq!(neck_from_type_name("600 x 600 Face 300 x 300 Connection"), Some((0.3, 0.3, false)));
+        assert_eq!(neck_from_type_name("600x600 - 250 Neck"), Some((0.25, 0.25, true)));
+        // Inches, not millimetres.
+        assert_eq!(neck_from_type_name("16x4 Connection 8 Diameter Duct"), None);
+        assert_eq!(neck_from_type_name("450 x 200"), None);
+    }
 }

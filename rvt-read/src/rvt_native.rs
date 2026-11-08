@@ -51,6 +51,7 @@ pub fn network_with_laps(
         fields: e.fields.iter().filter_map(field).collect(),
         flow_cfs: build::flow_from_parameters(&saved.entries_for(e)),
         description: build::description_from_parameters(&saved.entries_for(e)),
+        neck_ft: build::neck_from_parameters(&saved.entries_for(e)),
     });
     let mut net = build::build(duct_elements, &decoded);
     lap("build");

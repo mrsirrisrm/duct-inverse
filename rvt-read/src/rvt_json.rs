@@ -28,6 +28,7 @@ pub fn parse(json: &Value) -> Network {
             fields: e["fields"].as_array()?.iter().filter_map(field).collect(),
             flow_cfs: build::flow_from_parameters(e["parameters"].as_array().into_iter().flatten()),
             description: build::description_from_parameters(e["parameters"].as_array().into_iter().flatten()),
+            neck_ft: build::neck_from_parameters(e["parameters"].as_array().into_iter().flatten()),
         })
     });
     build::build(duct_elements, &decoded)

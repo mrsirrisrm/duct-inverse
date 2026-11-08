@@ -106,12 +106,17 @@ fn plenum_openings(net: &Network, path: &[usize], i: usize, size: [f64; 3]) -> O
     Some(Openings { inlet_m2: area(inlet), inlet_span_m: inlet.0.max(inlet.1), outlet_m2: area(outlet), distance_m, cos_theta })
 }
 
-/// The section of the first duct at or below `n` in the tree.
+/// The section of the first duct at or below `n` in the tree, or of the
+/// neck of a terminal reached before any.
 fn section_below(net: &Network, children: &[Vec<usize>], n: usize) -> Option<Section> {
     let mut queue = std::collections::VecDeque::from([n]);
     while let Some(m) = queue.pop_front() {
         if let NodeKind::Duct { width, height, round, .. } = net.nodes[m].kind {
             return Some((width, height, round));
+        }
+        // A terminal with no duct of its own (on the main's side): its neck.
+        if let (NodeKind::Terminal, Some(&neck)) = (&net.nodes[m].kind, net.necks.get(&net.nodes[m].id)) {
+            return Some(neck);
         }
         queue.extend(&children[m]);
     }
@@ -353,5 +358,37 @@ mod tests {
         assert!(matches!(blocks[0], (BlockParams::Segment { lining_m: 0.025, wrapped: true, .. }, "duct, lined 25 mm, insulated")));
         assert!(matches!(blocks[1], (BlockParams::Bend { lined: true, .. }, _)), "{}", blocks[1].1);
         assert!(matches!(blocks[2], (BlockParams::Segment { lining_m: 0.0, wrapped: false, .. }, "duct")));
+    }
+
+    /// A grille on the main's side, with no duct of its own, is sized by its
+    /// neck: the junction divides by area and its own noise is at the neck's.
+    #[test]
+    fn grille_on_the_duct_sized_by_its_neck() {
+        let node = |id, kind, flow| Node {
+            id, kind, family: String::new(), type_name: String::new(), systems: vec!["Supply Air".into()],
+            location: None, flow, ifc: None, description: String::new(), extent: None,
+        };
+        let duct = |id, x: f64| node(id, NodeKind::Duct { start: [x, 0.0, 0.0], end: [x + 2.0, 0.0, 0.0], width: 0.4, height: 0.3, round: false }, None);
+        let mut net = Network::default();
+        let unit = net.add_node(node(1, NodeKind::Equipment, None));
+        let main = net.add_node(duct(2, 0.0));
+        let on = net.add_node(duct(3, 2.0));
+        let end = net.add_node(node(4, NodeKind::Terminal, Some(0.15)));
+        let grille = net.add_node(node(5, NodeKind::Terminal, Some(0.05)));
+        for (a, b) in [(unit, main), (main, on), (on, end), (main, grille)] {
+            net.connect(a, b, EdgeSource::Recorded);
+        }
+        net.necks.insert(5, (0.4, 0.1, false));
+        let mut children = vec![Vec::new(); 5];
+        for (a, b) in [(unit, main), (main, on), (on, end), (main, grille)] {
+            children[a].push(b);
+        }
+        let flow = [0.2, 0.2, 0.15, 0.15, 0.05];
+        let mapped = chain(&net, &[unit, main, grille], &flow, &children, BendRegen::default());
+        let Some(BlockParams::Branch { outlets: Some(o), junction, .. }) = mapped.iter().map(|m| m.block).find(|b| matches!(b, BlockParams::Branch { .. })) else {
+            panic!("a branch by area");
+        };
+        assert!((o.branch_m2 - 0.04).abs() < 1e-12 && (o.total_m2 - 0.16).abs() < 1e-12, "{o:?}");
+        assert!(junction.side_m2.is_some_and(|a| (a - 0.04).abs() < 1e-12), "{:?}", junction.side_m2);
     }
 }
