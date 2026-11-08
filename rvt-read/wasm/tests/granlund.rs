@@ -40,9 +40,9 @@ fn revit_alone_rates_as_with_its_ifc() {
     for (x, y) in bands(a).iter().zip(bands(p)) {
         assert!((x - y).abs() < 1.0, "{:?} alone, {:?} with the IFC", bands(a), bands(p));
     }
-    // The same issues: the 15 terminals no unit feeds, and the unit's sound
-    // power estimated.
+    // The same issues: the 15 terminals no unit feeds (one joined to no duct
+    // at all), and the unit's sound power estimated.
     let issues = |v: &Value| v["issues"].as_array().unwrap().iter().map(|i| (i["kind"].clone(), i["elements"].as_array().unwrap().len())).collect::<Vec<_>>();
     assert_eq!(issues(&alone), issues(&paired));
-    assert_eq!(issues(&alone), [("terminals_unserved".into(), 15), ("unit_sound_power_estimated".into(), 1)]);
+    assert_eq!(issues(&alone), [("terminals_unserved".into(), 14), ("terminals_ductless".into(), 1), ("unit_sound_power_estimated".into(), 1)]);
 }

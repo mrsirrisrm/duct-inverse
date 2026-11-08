@@ -165,17 +165,34 @@ fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_l
 /// what to look at.
 fn issues(net: &Network) -> Vec<Value> {
     let (_, terminals) = terminals_served(net);
-    let unserved: Vec<i64> = terminals.iter().filter(|(_, served)| !served).map(|&(n, _)| net.nodes[n].id).collect();
+    let adj = net.neighbours();
+    // Those joined to nothing at all apart from those on ductwork that stops
+    // short of a unit: most of the first return through a ceiling void.
+    let (ductless, unserved): (Vec<usize>, Vec<usize>) =
+        terminals.iter().filter(|(_, served)| !served).map(|&(n, _)| n).partition(|&n| adj[n].is_empty());
+    let ids = |v: &[usize]| v.iter().map(|&n| net.nodes[n].id).collect::<Vec<_>>();
     let unserved = (!unserved.is_empty()).then(|| {
         json!({
             "kind": "terminals_unserved",
             "severity": "warning",
-            "elements": unserved,
+            "elements": ids(&unserved),
             "message": format!(
-                "{} of the {} terminals connect to no unit, so the rooms they serve are not rated",
+                "{} of the {} terminals are on ductwork that reaches no unit, so the rooms they serve are not rated",
                 unserved.len(), terminals.len()
             ),
             "check": "their ductwork for a gap, or for a unit not in this model (in a linked one)",
+        })
+    });
+    let ductless = (!ductless.is_empty()).then(|| {
+        json!({
+            "kind": "terminals_ductless",
+            "severity": "warning",
+            "elements": ids(&ductless),
+            "message": format!(
+                "{} of the {} terminals join no duct at all, so the rooms they serve are not rated",
+                ductless.len(), terminals.len()
+            ),
+            "check": "whether they return through the ceiling void (no duct to model), or their ducts are missing or in a linked model",
         })
     });
     path::overfed(net)
@@ -205,6 +222,7 @@ fn issues(net: &Network) -> Vec<Value> {
             })
         })
         .chain(unserved)
+        .chain(ductless)
         .collect()
 }
 
