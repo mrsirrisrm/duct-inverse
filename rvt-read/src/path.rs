@@ -115,7 +115,7 @@ pub struct Overfed {
 
 /// Every unit's tree, one per air system it names (one a duct, fitting or
 /// terminal names too: not a unit's hydronic systems), with its flows.
-fn unit_trees(net: &Network) -> Vec<(Tree, String, Vec<f64>)> {
+pub fn unit_trees(net: &Network) -> Vec<(Tree, String, Vec<f64>)> {
     let air: std::collections::HashSet<&str> = net
         .nodes
         .iter()

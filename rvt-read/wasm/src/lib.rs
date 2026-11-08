@@ -65,6 +65,101 @@ fn clock_ms() -> f64 {
     }
 }
 
+/// Whether a terminal is an outdoor termination by its family or type name
+/// (a cap, louvre, hood or intake): it serves no room.
+fn outdoor_termination(node: &duct_heal::network::Node) -> bool {
+    const WORDS: [&str; 5] = ["cap", "louver", "louvre", "hood", "intake"];
+    let name = format!("{} {}", node.family, node.type_name).to_lowercase();
+    name.split(|c: char| !c.is_alphanumeric()).any(|w| WORDS.contains(&w))
+}
+
+/// The terminals on a unit's island that no rated path reaches and nothing
+/// else reports (outside air is not rated by design), as issues: no design flow (an outdoor termination needs
+/// none); a path longer than the engine takes; or reaching a unit only
+/// through ductwork in none of its systems, by the nearest unit.
+fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_long: &[usize]) -> Vec<Value> {
+    let (_, terminals) = terminals_served(net);
+    let (mut on_tree, mut outside) = (vec![false; net.nodes.len()], vec![false; net.nodes.len()]);
+    for (tree, system, _) in path::unit_trees(net) {
+        for &n in &tree.order {
+            on_tree[n] = true;
+            outside[n] |= outside_air(&system);
+        }
+    }
+    let adj = net.neighbours();
+    let nearest_unit = |t: usize| {
+        let mut seen = vec![false; net.nodes.len()];
+        let mut queue = std::collections::VecDeque::from([t]);
+        seen[t] = true;
+        while let Some(n) = queue.pop_front() {
+            if n != t && net.nodes[n].kind == NodeKind::Equipment {
+                return Some(n);
+            }
+            for &m in &adj[n] {
+                if !std::mem::replace(&mut seen[m], true) {
+                    queue.push_back(m);
+                }
+            }
+        }
+        None
+    };
+    let (mut no_flow, mut long, mut off): (Vec<i64>, Vec<i64>, Vec<(usize, Vec<usize>)>) = Default::default();
+    for &(t, served) in &terminals {
+        let node = &net.nodes[t];
+        if !served || rated.contains(&t) || outside[t] || node.systems.iter().any(|s| outside_air(s)) {
+        } else if !node.flow.is_some_and(|q| q > 0.0) {
+            if !outdoor_termination(node) {
+                no_flow.push(node.id);
+            }
+        } else if too_long.contains(&t) {
+            long.push(node.id);
+        } else if !on_tree[t] {
+            if let Some(u) = nearest_unit(t) {
+                match off.iter_mut().find(|(k, _)| *k == u) {
+                    Some((_, v)) => v.push(t),
+                    None => off.push((u, vec![t])),
+                }
+            }
+        }
+    }
+    let mut out: Vec<Value> = off
+        .into_iter()
+        .map(|(u, ts)| {
+            let unit = &net.nodes[u];
+            let q: f64 = ts.iter().filter_map(|&t| net.nodes[t].flow).sum();
+            json!({
+                "kind": "terminals_off_system",
+                "severity": "warning",
+                "elements": ts.iter().map(|&t| net.nodes[t].id).collect::<Vec<_>>(),
+                "message": format!(
+                    "{} terminals ({:.0} L/s) reach unit {} ({}) only through ductwork assigned to none of its air systems, so the rooms they serve are not rated",
+                    ts.len(), q * 1000.0, unit.id, unit.family
+                ),
+                "check": "which system their ductwork belongs to, and assign it to the unit's",
+            })
+        })
+        .collect();
+    if !long.is_empty() {
+        out.push(json!({
+            "kind": "terminals_path_too_long",
+            "severity": "warning",
+            "message": format!("{} terminals' paths map to more than the engine's {MAX_BLOCKS} elements, so the rooms they serve are not rated", long.len()),
+            "elements": long,
+            "check": "these rooms by hand",
+        }));
+    }
+    if !no_flow.is_empty() {
+        out.push(json!({
+            "kind": "terminals_no_flow",
+            "severity": "warning",
+            "message": format!("{} terminals connected to a unit have no design flow, so the rooms they serve are not rated", no_flow.len()),
+            "elements": no_flow,
+            "check": "their Flow parameter",
+        }));
+    }
+    out
+}
+
 /// What in the model stops it being rated as it stands, for the engineer to
 /// check: each issue's kind, the elements it is about, what is wrong and
 /// what to look at.
@@ -119,6 +214,7 @@ fn grouped(issues: Vec<Value>) -> Vec<Value> {
     let headline = |kind: &str, n: usize| match kind {
         "unit_flow_mismatch" => Some(format!("{n} units' Air Flow differs from what their terminals sum to, which the ratings use")),
         "duct_velocity" => Some(format!("{n} ducts on the worst room's path run over CIBSE Guide B table 5.2's limit above a suspended ceiling for a normal space")),
+        "terminals_off_system" => Some(format!("{n} units reach terminals only through ductwork assigned to none of their air systems, so the rooms those serve are not rated")),
         "plenum_unsized" => Some(format!("{n} plenums on the worst room's path have no extent, so their loss is left out")),
         "fitting_unclassified" => Some(format!("{n} fittings on the worst room's path are of no type the rules know, so they are passed through with neither loss nor noise")),
         _ => None,
@@ -316,7 +412,7 @@ pub fn analyse_bytes(
     // on the way out takes power off, so the farthest is seldom the loudest.
     // A terminal two units' trees reach is rated under the first.
     let mut taken = vec![false; net.nodes.len()];
-    let mut paths = Vec::new();
+    let (mut paths, mut too_long) = (Vec::new(), Vec::new());
     for (u, unit) in systems.iter().enumerate() {
         let mut children = vec![Vec::new(); net.nodes.len()];
         for &n in &unit.tree.order {
@@ -333,10 +429,13 @@ pub fn analyse_bytes(
             let mapped = chain::chain(&net, &p, &unit.flow, &children, bend_regen);
             if mapped.len() <= MAX_BLOCKS {
                 paths.push((u, t, p, mapped));
+            } else {
+                too_long.push(t);
             }
         }
     }
-    let terminals_rated = taken.iter().filter(|&&t| t).count();
+    let terminals_rated = paths.len();
+    issues.extend(unrated_issues(&net, &paths.iter().map(|p| p.1).collect(), &too_long));
     if paths.is_empty() {
         return Err(format!("every path from the units maps to more than the engine's {MAX_BLOCKS} blocks"));
     }
@@ -589,6 +688,7 @@ pub fn analyse_bytes(
         "assumptions": [
             if source.is_some() { "source: every unit's sound power as given" } else { "source: each unit's system a forward-curved fan at its flow, 250 Pa for a supply and 125 Pa for a return or extract, by the Revit system type's classification, else the system's name (no sound data given)" },
             "systems whose terminals are outside, discharging or drawing in outdoor air by their names, are not rated",
+            "terminals with no design flow named as caps, louvres, hoods or intakes are outdoor terminations, serving no room",
             if revit_rooms { "rooms from the Revit model's MEP spaces, their volume their extent's" } else { "rooms from the IFC's spaces, their volume their extent's" },
             "rooms: a receiver at 1.2 m under each diffuser, every diffuser in the room reaching it by Schultz's equation (a normally furnished room) at its distance; the room rated at its worst receiver",
             "a terminal in no space: rated alone, in 50 m3 at 2 m",
@@ -658,6 +758,34 @@ mod tests {
 
     /// Table 5.2 above a suspended ceiling: rectangular 3, 5 and 6 m/s, round
     /// 5, 7 and 10; a main 50 % more.
+    /// A unit reaching a grille only through unnamed ductwork, and a terminal
+    /// with no flow, are reported; an outdoor cap with none is not.
+    #[test]
+    fn unrated_terminals_reported() {
+        use super::*;
+        use duct_heal::{EdgeSource, Node};
+        let mut net = Network::default();
+        let node = |id, kind, systems: &[&str], flow, family: &str| Node {
+            id, kind, family: family.into(), type_name: String::new(),
+            systems: systems.iter().map(|s| s.to_string()).collect(),
+            location: None, flow, ifc: None, description: String::new(), extent: None,
+        };
+        let unit = net.add_node(node(1, NodeKind::Equipment, &["SA"], None, "AHU"));
+        let supply = net.add_node(node(2, NodeKind::DuctNoGeometry, &["SA"], None, ""));
+        let diffuser = net.add_node(node(3, NodeKind::Terminal, &["SA"], Some(0.1), "Diffuser"));
+        let idle = net.add_node(node(4, NodeKind::Terminal, &["SA"], None, "Diffuser"));
+        let cap = net.add_node(node(5, NodeKind::Terminal, &["SA"], None, "Exhaust Cap-FB"));
+        let back = net.add_node(node(6, NodeKind::DuctNoGeometry, &[], None, ""));
+        let grille = net.add_node(node(7, NodeKind::Terminal, &[], Some(0.1), "Return Grille"));
+        for (a, b) in [(unit, supply), (supply, diffuser), (supply, idle), (supply, cap), (unit, back), (back, grille)] {
+            net.connect(a, b, EdgeSource::Recorded);
+        }
+        let rated = [diffuser].into_iter().collect();
+        let issues = unrated_issues(&net, &rated, &[]);
+        let kinds: Vec<(&str, &Value)> = issues.iter().map(|i| (i["kind"].as_str().unwrap(), &i["elements"])).collect();
+        assert_eq!(kinds, [("terminals_off_system", &serde_json::json!([7])), ("terminals_no_flow", &serde_json::json!([4]))]);
+    }
+
     #[test]
     fn velocity_grades() {
         use super::velocity_grade;
