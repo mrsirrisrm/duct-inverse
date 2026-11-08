@@ -533,6 +533,28 @@ pub fn analyse_bytes(
             "controls": parts,
         })
     };
+    // Every rated terminal with its room's rating, for colouring a model by
+    // NC: the rooms' list stops at 20.
+    let mut room_nc = vec![None; paths.len()];
+    for r in &rated {
+        for &k in &r.terminals {
+            room_nc[k] = Some(r.nc);
+        }
+    }
+    let terminals_json: Vec<Value> = paths
+        .iter()
+        .zip(&terminals)
+        .zip(&room_nc)
+        .map(|((&(u, t, ..), terminal), nc)| {
+            json!({
+                "id": net.nodes[t].id,
+                "unit": net.nodes[systems[u].tree.root].id,
+                "system": systems[u].system,
+                "space": terminal.space.map(|k| spaces[k].name.clone()),
+                "room_nc": nc,
+            })
+        })
+        .collect();
     let room = &rated[0];
     let (worst, _) = controls(room);
     let loudest_unit = worst["parts"].as_array().unwrap().iter().find(|p| p["as"] == "unit");
@@ -685,6 +707,7 @@ pub fn analyse_bytes(
             },
         },
         "rooms": rated.iter().take(20).map(&room_json).collect::<Vec<_>>(),
+        "terminals": terminals_json,
         "assumptions": [
             if source.is_some() { "source: every unit's sound power as given" } else { "source: each unit's system a forward-curved fan at its flow, 250 Pa for a supply and 125 Pa for a return or extract, by the Revit system type's classification, else the system's name (no sound data given)" },
             "systems whose terminals are outside, discharging or drawing in outdoor air by their names, are not rated",

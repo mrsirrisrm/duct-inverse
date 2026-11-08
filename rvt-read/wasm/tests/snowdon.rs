@@ -20,6 +20,12 @@ fn terminals_on_ducts_and_on_flex_reach_their_units() {
     assert_eq!(r["terminals_on_ducts"], 406);
     assert_eq!(r["runs_on_ducts"], 18);
     assert_eq!((r["healed"]["terminals"].as_u64(), r["healed"]["terminals_with_equipment"].as_u64()), (Some(509), Some(508)));
+    // Every rated terminal, each with its room's rating; the worst room's among them.
+    let terminals = r["terminals"].as_array().unwrap();
+    assert_eq!(terminals.len() as u64, r["path"]["terminals_rated"].as_u64().unwrap());
+    assert!(terminals.iter().all(|t| t["room_nc"].is_i64() && t["unit"].is_i64()));
+    let worst = r["rooms"][0]["nc"].as_i64().unwrap();
+    assert_eq!(terminals.iter().filter_map(|t| t["room_nc"].as_i64()).max(), Some(worst));
     // Its flows do not balance, and the worst room says so first.
     let issues = r["issues"].as_array().unwrap();
     let kinds: Vec<&str> = issues.iter().map(|i| i["kind"].as_str().unwrap()).collect();
