@@ -76,8 +76,9 @@ fn outdoor_termination(node: &duct_heal::network::Node) -> bool {
 /// The terminals on a unit's island that no rated path reaches and nothing
 /// else reports (outside air is not rated by design), as issues: no design flow (an outdoor termination needs
 /// none); a path longer than the engine takes; or reaching a unit only
-/// through ductwork in none of its systems, by the nearest unit.
-fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_long: &[usize]) -> Vec<Value> {
+/// through ductwork in none of its systems, by the nearest unit. With them,
+/// every terminal counted once under what became of it, `other` for none.
+fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_long: &[usize]) -> (Vec<Value>, Value) {
     let (_, terminals) = terminals_served(net);
     let (mut on_tree, mut outside) = (vec![false; net.nodes.len()], vec![false; net.nodes.len()]);
     for (tree, system, _) in path::unit_trees(net) {
@@ -104,24 +105,39 @@ fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_l
         None
     };
     let (mut no_flow, mut long, mut off): (Vec<i64>, Vec<i64>, Vec<(usize, Vec<usize>)>) = Default::default();
+    let adj_empty = |t: usize| adj[t].is_empty();
+    let mut tally = std::collections::BTreeMap::<&str, usize>::new();
     for &(t, served) in &terminals {
         let node = &net.nodes[t];
-        if !served || rated.contains(&t) || outside[t] || node.systems.iter().any(|s| outside_air(s)) {
+        let bucket = if !served {
+            if adj_empty(t) { "ductless" } else { "unserved" }
+        } else if rated.contains(&t) {
+            "rated"
+        } else if outside[t] || node.systems.iter().any(|s| outside_air(s)) {
+            "outside_air"
         } else if !node.flow.is_some_and(|q| q > 0.0) {
-            if !outdoor_termination(node) {
+            if outdoor_termination(node) {
+                "outdoor_termination"
+            } else {
                 no_flow.push(node.id);
+                "no_flow"
             }
         } else if too_long.contains(&t) {
             long.push(node.id);
-        } else if !on_tree[t] {
-            if let Some(u) = nearest_unit(t) {
-                match off.iter_mut().find(|(k, _)| *k == u) {
-                    Some((_, v)) => v.push(t),
-                    None => off.push((u, vec![t])),
-                }
+            "path_too_long"
+        } else if let (false, Some(u)) = (on_tree[t], nearest_unit(t)) {
+            match off.iter_mut().find(|(k, _)| *k == u) {
+                Some((_, v)) => v.push(t),
+                None => off.push((u, vec![t])),
             }
-        }
+            "off_system"
+        } else {
+            "other"
+        };
+        *tally.entry(bucket).or_default() += 1;
     }
+    let mut tally = json!(tally);
+    tally["total"] = json!(terminals.len());
     let mut out: Vec<Value> = off
         .into_iter()
         .map(|(u, ts)| {
@@ -157,7 +173,7 @@ fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_l
             "check": "their Flow parameter",
         }));
     }
-    out
+    (out, tally)
 }
 
 /// Units that start no rated path but whose ductwork joins units that do (a
@@ -518,7 +534,8 @@ pub fn analyse_bytes(
         }
     }
     let terminals_rated = paths.len();
-    issues.extend(unrated_issues(&net, &paths.iter().map(|p| p.1).collect(), &too_long));
+    let (unrated, terminal_tally) = unrated_issues(&net, &paths.iter().map(|p| p.1).collect(), &too_long);
+    issues.extend(unrated);
     issues.extend(feeding_issues(&net, &paths.iter().map(|p| systems[p.0].tree.root).collect()));
     if paths.is_empty() {
         return Err(format!("every path from the units maps to more than the engine's {MAX_BLOCKS} blocks"));
@@ -765,6 +782,7 @@ pub fn analyse_bytes(
         "recorded": recorded,
         "ifc": ifc,
         "takeoffs": { "found": takeoffs.takeoffs, "joined": takeoffs.joined, "ambiguous": takeoffs.ambiguous, "unmatched": takeoffs.unmatched },
+        "terminal_tally": terminal_tally,
         "terminals_on_ducts": on_ducts,
         "runs_on_ducts": runs_on_ducts,
         "healed": healed,
@@ -888,9 +906,11 @@ mod tests {
             net.connect(a, b, EdgeSource::Recorded);
         }
         let rated = [diffuser].into_iter().collect();
-        let issues = unrated_issues(&net, &rated, &[]);
+        let (issues, tally) = unrated_issues(&net, &rated, &[]);
         let kinds: Vec<(&str, &Value)> = issues.iter().map(|i| (i["kind"].as_str().unwrap(), &i["elements"])).collect();
         assert_eq!(kinds, [("terminals_off_system", &serde_json::json!([7])), ("terminals_no_flow", &serde_json::json!([4]))]);
+        // Every terminal under one head, the cap with no issue among them.
+        assert_eq!(tally, serde_json::json!({ "rated": 1, "no_flow": 1, "outdoor_termination": 1, "off_system": 1, "total": 4 }));
     }
 
     /// A unit starting no rated path whose ductwork joins a rated one is
