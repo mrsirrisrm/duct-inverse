@@ -367,6 +367,11 @@ fn fan_estimate(flow_m3s: f64, pressure_pa: f64) -> [f64; N_BANDS] {
 /// or extract, whose fan works against less ductwork and no terminal
 /// devices, half that.
 const SUPPLY_PA: f64 = 250.0;
+
+/// A duct velocity no design runs at above occupied rooms (CIBSE Guide B
+/// table 5.2 stops at 10 m/s, a main's 15): past it a path's flows and
+/// sizes disagree.
+const IMPLAUSIBLE_M_S: f64 = 20.0;
 const RETURN_PA: f64 = 125.0;
 
 /// Whether a system draws air from the rooms, by its name: English (Revit's
@@ -583,6 +588,39 @@ pub fn analyse_bytes(
         }
     }
     let rated = rooms::rate(&terminals, &sources, &spaces);
+    // Each path's fastest duct: past IMPLAUSIBLE_M_S its sizes and its flows
+    // disagree, and the regen correlations are far out of their range.
+    let fastest = |k: usize| -> Option<(f64, i64)> {
+        let (u, _, _, ref mapped) = paths[k];
+        mapped
+            .iter()
+            .filter_map(|m| {
+                let (BlockParams::Segment { width_m, height_m, round, .. } | BlockParams::Bend { width_m, height_m, round, .. }) = m.block else { return None };
+                let q = systems[u].flow[net.find(m.element)?];
+                Some((q / if round { std::f64::consts::FRAC_PI_4 * width_m * width_m } else { width_m * height_m }, m.element))
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+    };
+    let implausible: Vec<Option<(f64, i64)>> = rated
+        .iter()
+        .map(|r| r.terminals.iter().filter_map(|&k| fastest(k)).max_by(|a, b| a.0.total_cmp(&b.0)).filter(|f| f.0 > IMPLAUSIBLE_M_S))
+        .collect();
+    let doubtful: Vec<usize> = (0..rated.len()).filter(|&i| implausible[i].is_some()).collect();
+    if !doubtful.is_empty() {
+        let (v, duct) = doubtful.iter().filter_map(|&i| implausible[i]).max_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+        let name = |r: &rooms::RoomRating| r.space.map_or("a terminal in no space".to_string(), |k| spaces[k].name.clone());
+        issues.insert(0, json!({
+            "kind": "room_flow_implausible",
+            "severity": "error",
+            "elements": doubtful.iter().filter_map(|&i| implausible[i]).map(|f| f.1).collect::<Vec<_>>(),
+            "message": format!(
+                "{} rooms are rated through ducts over {IMPLAUSIBLE_M_S:.0} m/s (duct {duct} at {v:.0} m/s): their terminals' flows and their ducts' sizes disagree, so their NC is not a rating ({}), and the worst room is taken from the rest",
+                doubtful.len(),
+                doubtful.iter().take(5).map(|&i| format!("{} NC {}", name(&rated[i]), rated[i].nc)).collect::<Vec<_>>().join(", ")
+            ),
+            "check": "the terminals' design flows and the duct sizes on these paths (the elements are each room's fastest duct)",
+        }));
+    }
     // What sets a room's rating: at the band nearest its NC curve, each
     // element's share of what its worst receiver hears there; and the runs
     // breaking out over it, together.
@@ -628,6 +666,7 @@ pub fn analyse_bytes(
             "volume_m3": (r.volume_m3 * 10.0).round() / 10.0,
             "terminals": r.terminals.len(),
             "nc": r.nc,
+            "flows_implausible": rated.iter().position(|x| std::ptr::eq(x, r)).is_some_and(|i| implausible[i].is_some()),
             "breakout": { "runs": r.breakout_runs, "share_at_band": (breakout * 1000.0).round() / 1000.0 },
             "receiver_under": id(r.receiver_under),
             "dominant": { "terminal": id(r.dominant), "distance_m": (r.dominant_distance_m * 100.0).round() / 100.0 },
@@ -656,7 +695,7 @@ pub fn analyse_bytes(
             })
         })
         .collect();
-    let room = &rated[0];
+    let room = (0..rated.len()).find(|&i| implausible[i].is_none()).map_or(&rated[0], |i| &rated[i]);
     let (worst, _) = controls(room);
     let loudest_unit = worst["parts"].as_array().unwrap().iter().find(|p| p["as"] == "unit");
     let unit_share = loudest_unit.and_then(|p| p["share"].as_f64()).unwrap_or(0.0);
