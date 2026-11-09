@@ -50,6 +50,20 @@ npm run dev
   `DUCT_SAMPLES=$PWD/samples cargo test` in `rvt-read/wasm/` rates it alone as
   with its IFC.
 
+## QA by another Claude session
+
+`qa-mcp/server.py` (Python, standard library only) is an MCP server that
+gives a second Claude session the pipeline as tools: `status`,
+`list_models`, `analyse`, `report`, `find_element`, `engine` (rates a
+hand-built chain) and `run_tests`. Every call builds the current code
+first, so the QA session tests what was last saved without reconnecting.
+Reports are cached in `samples/.qa-cache`.
+
+A session started in this repo picks it up from `.mcp.json` over stdio.
+To host it instead, run `python3 qa-mcp/server.py --http` (port 3101, or
+`--http <port>`) and connect with
+`claude mcp add --transport http duct-qa http://127.0.0.1:3101/mcp`.
+
 ## Deploying to Vercel
 
 Vercel auto-detects Vite. Just point it at this repo and accept the

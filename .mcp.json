@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "duct-qa": {
+      "command": "python3",
+      "args": ["qa-mcp/server.py"]
+    }
+  }
+}

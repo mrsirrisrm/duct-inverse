@@ -406,15 +406,10 @@ pub fn evaluate_params(input_source_type: String, params: Params) -> DesignFacts
     }
 }
 
-/// Evaluate a duct system and return the full design-facts JSON.
-#[wasm_bindgen]
-pub fn evaluate(params_js: JsValue) -> Result<JsValue, JsValue> {
-    let input: InputParams = serde_wasm_bindgen::from_value(params_js)
-        .map_err(|e| JsValue::from_str(&format!("bad input: {e}")))?;
-    let source_type = parse_source_type(&input.source_type)
-        .map_err(|e| JsValue::from_str(&e))?;
-    let source_type_label = input.source_type;
-    let lined_fit = parse_lined_fit(input.lined_fit.as_deref()).map_err(|e| JsValue::from_str(&e))?;
+/// Evaluate a parsed input: the wasm entry's work, callable natively.
+pub fn evaluate_input(input: InputParams) -> Result<DesignFacts, String> {
+    let source_type = parse_source_type(&input.source_type)?;
+    let lined_fit = parse_lined_fit(input.lined_fit.as_deref())?;
     let params = Params {
         source_type,
         source_offset_db: input.source_offset_db,
@@ -424,7 +419,15 @@ pub fn evaluate(params_js: JsValue) -> Result<JsValue, JsValue> {
         blocks: input.blocks.into_iter().map(InputBlock::into_params).collect(),
         lined_fit,
     };
-    let out = evaluate_params(source_type_label, params);
+    Ok(evaluate_params(input.source_type, params))
+}
+
+/// Evaluate a duct system and return the full design-facts JSON.
+#[wasm_bindgen]
+pub fn evaluate(params_js: JsValue) -> Result<JsValue, JsValue> {
+    let input: InputParams = serde_wasm_bindgen::from_value(params_js)
+        .map_err(|e| JsValue::from_str(&format!("bad input: {e}")))?;
+    let out = evaluate_input(input).map_err(|e| JsValue::from_str(&e))?;
     serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&format!("{e}")))
 }
 
