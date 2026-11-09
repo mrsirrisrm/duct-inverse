@@ -160,6 +160,70 @@ fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_l
     out
 }
 
+/// Units that start no rated path but whose ductwork joins units that do (a
+/// dedicated outdoor air unit feeding heat pumps): their noise reaches rooms
+/// only through those, which is not rated. Units feeding the same ones are
+/// one issue. Overfed units are reported apart; outside air's markers (a
+/// MagiCAD connection node) are no source.
+fn feeding_issues(net: &Network, rated_units: &std::collections::HashSet<usize>) -> Vec<Value> {
+    let adj = net.neighbours();
+    let overfed: std::collections::HashSet<usize> = path::overfed(net).into_iter().map(|o| o.unit).collect();
+    let is_unit = |n: usize| net.nodes[n].kind == NodeKind::Equipment;
+    let outside = |n: usize| {
+        let s = &net.nodes[n].systems;
+        !s.is_empty() && s.iter().all(|s| outside_air(s))
+    };
+    let mut groups: Vec<(Vec<i64>, Vec<i64>)> = Vec::new();
+    for u in (0..net.nodes.len()).filter(|&u| is_unit(u) && !rated_units.contains(&u) && !overfed.contains(&u) && !outside(u) && !adj[u].is_empty()) {
+        // Out along its ductwork, stopping at the next unit.
+        let mut seen = vec![false; net.nodes.len()];
+        let mut queue = std::collections::VecDeque::from([u]);
+        seen[u] = true;
+        let mut fed = Vec::new();
+        while let Some(n) = queue.pop_front() {
+            if n != u && is_unit(n) {
+                if rated_units.contains(&n) {
+                    fed.push(net.nodes[n].id);
+                }
+                continue;
+            }
+            for &m in &adj[n] {
+                if !std::mem::replace(&mut seen[m], true) {
+                    queue.push_back(m);
+                }
+            }
+        }
+        if fed.is_empty() {
+            continue;
+        }
+        fed.sort_unstable();
+        match groups.iter_mut().find(|(_, f)| *f == fed) {
+            Some((units, _)) => units.push(net.nodes[u].id),
+            None => groups.push((vec![net.nodes[u].id], fed)),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(units, fed)| {
+            let names: Vec<String> = units
+                .iter()
+                .map(|&id| format!("{} ({})", id, net.find(id).map_or("", |n| net.nodes[n].family.as_str())))
+                .collect();
+            json!({
+                "kind": "unit_feeds_units",
+                "severity": "warning",
+                "elements": units.iter().chain(&fed).copied().collect::<Vec<_>>(),
+                "message": if let [one] = names.as_slice() {
+                    format!("unit {one} starts no rated path, but its ductwork joins {} rated units: where it supplies them, its noise reaches their rooms through them, and that is not rated", fed.len())
+                } else {
+                    format!("units {} start no rated path, but their ductwork joins {} rated units: where they supply them, their noise reaches those units' rooms through them, and that is not rated", names.join(", "), fed.len())
+                },
+                "check": "whether it feeds those units (then its noise into their rooms by hand), or its ductwork should carry one of its air systems",
+            })
+        })
+        .collect()
+}
+
 /// What in the model stops it being rated as it stands, for the engineer to
 /// check: each issue's kind, the elements it is about, what is wrong and
 /// what to look at.
@@ -232,6 +296,7 @@ fn grouped(issues: Vec<Value>) -> Vec<Value> {
     let headline = |kind: &str, n: usize| match kind {
         "unit_flow_mismatch" => Some(format!("{n} units' Air Flow differs from what their terminals sum to, which the ratings use")),
         "duct_velocity" => Some(format!("{n} ducts on the worst room's path run over CIBSE Guide B table 5.2's limit above a suspended ceiling for a normal space")),
+        "unit_feeds_units" => Some(format!("{n} groups of units start no rated path but their ductwork joins rated units, so where they supply them their noise is not rated")),
         "terminals_off_system" => Some(format!("{n} units reach terminals only through ductwork assigned to none of their air systems, so the rooms those serve are not rated")),
         "plenum_unsized" => Some(format!("{n} plenums on the worst room's path have no extent, so their loss is left out")),
         "fitting_unclassified" => Some(format!("{n} fittings on the worst room's path are of no type the rules know, so they are passed through with neither loss nor noise")),
@@ -454,6 +519,7 @@ pub fn analyse_bytes(
     }
     let terminals_rated = paths.len();
     issues.extend(unrated_issues(&net, &paths.iter().map(|p| p.1).collect(), &too_long));
+    issues.extend(feeding_issues(&net, &paths.iter().map(|p| systems[p.0].tree.root).collect()));
     if paths.is_empty() {
         return Err(format!("every path from the units maps to more than the engine's {MAX_BLOCKS} blocks"));
     }
@@ -825,6 +891,33 @@ mod tests {
         let issues = unrated_issues(&net, &rated, &[]);
         let kinds: Vec<(&str, &Value)> = issues.iter().map(|i| (i["kind"].as_str().unwrap(), &i["elements"])).collect();
         assert_eq!(kinds, [("terminals_off_system", &serde_json::json!([7])), ("terminals_no_flow", &serde_json::json!([4]))]);
+    }
+
+    /// A unit starting no rated path whose ductwork joins a rated one is
+    /// reported, once with any other feeding the same; an outdoor air
+    /// marker is not.
+    #[test]
+    fn unit_feeding_rated_units_reported() {
+        use super::*;
+        use duct_heal::{EdgeSource, Node};
+        let mut net = Network::default();
+        let node = |id, kind, systems: &[&str]| Node {
+            id, kind, family: String::new(), type_name: String::new(),
+            systems: systems.iter().map(|s| s.to_string()).collect(),
+            location: None, flow: None, ifc: None, description: String::new(), extent: None,
+        };
+        let doas = net.add_node(node(1, NodeKind::Equipment, &["1,3,5"]));
+        let duct = net.add_node(node(2, NodeKind::DuctNoGeometry, &[]));
+        let pump = net.add_node(node(3, NodeKind::Equipment, &["SA 1"]));
+        let idle = net.add_node(node(4, NodeKind::Equipment, &["2,4"]));
+        let inlet = net.add_node(node(5, NodeKind::Equipment, &["Outdoor Air"]));
+        for (a, b) in [(doas, duct), (duct, pump), (idle, duct), (inlet, duct)] {
+            net.connect(a, b, EdgeSource::Recorded);
+        }
+        let issues = feeding_issues(&net, &[pump].into_iter().collect());
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0]["elements"], serde_json::json!([1, 4, 3]));
+        assert!(feeding_issues(&net, &Default::default()).is_empty());
     }
 
     #[test]
