@@ -92,7 +92,10 @@ def run(args):
     CACHE.mkdir(parents=True, exist_ok=True)
     cached = CACHE / (hashlib.sha1(key.encode()).hexdigest() + ".json")
     if cached.exists() and not args.get("fresh"):
-        return json.loads(cached.read_text())
+        # The same binary and model: the result holds at the current commit.
+        report = json.loads(cached.read_text())
+        report["_run"].update(commit=commit(), cache_hit=True, first_run_at=report["_run"]["commit"])
+        return report
     env = dict(ENV)
     if lw:
         env["LW"] = ",".join(str(v) for v in lw)
@@ -103,7 +106,7 @@ def run(args):
     r = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if r.returncode:
         raise ToolError(f"analyse failed ({r.returncode}):\n{r.stderr[-6000:]}")
-    report = {"_run": {"commit": commit(), "models": [p.name for p in (model, ifc) if p],
+    report = {"_run": {"commit": commit(), "cache_hit": False, "models": [p.name for p in (model, ifc) if p],
                        "lw": lw, "bend_regen": bend or "recorded", "wall_s": round(time.time() - start, 1),
                        "stderr": r.stderr[-2000:]},
               **json.loads(r.stdout)}
