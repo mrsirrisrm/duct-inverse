@@ -297,12 +297,15 @@ pub fn chain(net: &Network, path: &[usize], flow: &[f64], children: &[Vec<usize>
                     }
                 }
             }
+            // Rated at its neck (CIBSE's terminal noise is by neck velocity):
+            // its own where its parameters give it, else the last duct's.
             NodeKind::Terminal => {
-                if let Some((w, h, round)) = section(net, path, i) {
+                let neck = net.necks.get(&node.id).map(|&n| (n, "its neck")).or_else(|| section(net, path, i).map(|n| (n, "neck from last duct")));
+                if let Some(((w, h, round), from)) = neck {
                     // Its ceiling is not in the model: flush, the smaller end
                     // reflection, is the conservative choice.
                     let block = BlockParams::Diffuser { width_m: w, height_m: h, round, lw_db: None, termination: Termination::Flush };
-                    push(block, format!("{}, neck from last duct", node.family));
+                    push(block, format!("{}, {from}", node.family));
                 }
             }
             // Takeoffs and tees are the Branch above; transitions are not
