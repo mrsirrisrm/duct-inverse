@@ -27,6 +27,10 @@ pub struct Element<'a> {
     pub description: String,
     /// A terminal's neck from its parameters, feet: width, height, round.
     pub neck_ft: Option<(f64, f64, bool)>,
+    /// Whether a duct is round by its parameters, where they say.
+    pub round: Option<bool>,
+    /// A duct's outside area from its parameters, square feet: MagiCAD's.
+    pub surface_ft2: Option<f64>,
 }
 
 fn kind_of(class: &str) -> Option<NodeKind> {
@@ -96,7 +100,22 @@ pub fn build<'a>(elements: impl IntoIterator<Item = Element<'a>>, decoded: &Hash
             ) {
                 let name = format!("{} {}", element.str("m_family_name"), element.str("m_type_name")).to_lowercase();
                 // English, Finnish (pyöreä) and the Scandinavian and German rund.
-                let round = ["round", "circular", "spiral", "pyöreä", "rund"].iter().any(|k| name.contains(k));
+                let named_round = ["round", "circular", "spiral", "pyöreä", "rund"].iter().any(|k| name.contains(k));
+                // Revit gives a round duct its diameter as width and height
+                // both; a square rectangular duct is rare (3 of Nordic's 698
+                // square sections, against its IFC). So square is round unless
+                // the name says rectangular (Finnish suorakaide).
+                let named_rect = ["rect", "suorakaide", "square"].iter().any(|k| name.contains(k));
+                // Else a square section's perimeter, where its outside area
+                // gives one within 5% of pi d or 4 d (not where the duct runs
+                // into a unit and the area is only what shows).
+                let length = (0..3).map(|k| (end[k] - start[k]).powi(2)).sum::<f64>().sqrt() / FT;
+                let by_perimeter = element.surface_ft2.filter(|_| length > 0.0 && (w - h).abs() < 1e-9).and_then(|a| {
+                    let p = a / length;
+                    let near = |q: f64| (p - q).abs() < 0.05 * q;
+                    (near(std::f64::consts::PI * w) || near(4.0 * w)).then(|| near(std::f64::consts::PI * w))
+                });
+                let round = element.round.or(by_perimeter).unwrap_or(named_round || ((w - h).abs() < 1e-9 && !named_rect));
                 // A round duct's one dimension is its diameter.
                 let (w, h) = if round { (w.max(h), w.max(h)) } else { (w, h) };
                 kind = NodeKind::Duct { start, end, width: w * FT, height: h * FT, round };
@@ -224,6 +243,22 @@ pub fn neck_from_type_name(name: &str) -> Option<(f64, f64, bool)> {
     Some((d, d, true))
 }
 
+/// Whether a duct is round, where its parameters say: MagiCAD's product
+/// code, "MAGID-C1-125" circular, "MAGID-R1-211-211" rectangular.
+pub fn round_from_parameters<'v>(parameters: impl IntoIterator<Item = &'v serde_json::Value>) -> Option<bool> {
+    let code = parameters.into_iter().find(|p| p["name"] == "MC Product Code Instance")?["value"].as_str()?.to_ascii_uppercase();
+    match code.strip_prefix("MAGID-")?.chars().next()? {
+        'C' => Some(true),
+        'R' => Some(false),
+        _ => None,
+    }
+}
+
+/// A duct's outside area, square feet: MagiCAD's MC Surface Area.
+pub fn surface_from_parameters<'v>(parameters: impl IntoIterator<Item = &'v serde_json::Value>) -> Option<f64> {
+    parameters.into_iter().find(|p| p["name"] == "MC Surface Area")?["value"].as_f64().filter(|&a| a > 0.0)
+}
+
 pub fn flow_from_parameters<'v>(parameters: impl IntoIterator<Item = &'v serde_json::Value>) -> Option<f64> {
     parameters.into_iter().find_map(|p| match p["name"].as_str() {
         Some("Flow" | "Air Flow") => p["value"].as_f64(),
@@ -245,6 +280,39 @@ mod tests {
         assert_eq!(neck_from_parameters(p.as_array().unwrap()), Some((1.3333333333333333, 0.3333333333333333, false)));
         let diameter_only = serde_json::json!([{"name": "Duct Diameter", "value": 0.5}]);
         assert_eq!(neck_from_parameters(diameter_only.as_array().unwrap()), None);
+    }
+
+    /// A Revit duct's shape: a square section is round unless its name,
+    /// MagiCAD's product code or its outside area says otherwise.
+    #[test]
+    fn duct_shape() {
+        let duct = |id: i64, w: f64, name: &'static str, round: Option<bool>, surface_ft2: Option<f64>| Element {
+            id,
+            class: "Duct",
+            fields: vec![
+                ("m_duct_start_x", Field::Num(0.0)), ("m_duct_start_y", Field::Num(0.0)), ("m_duct_start_z", Field::Num(0.0)),
+                ("m_duct_end_x", Field::Num(10.0)), ("m_duct_end_y", Field::Num(0.0)), ("m_duct_end_z", Field::Num(0.0)),
+                ("m_curve_width", Field::Num(w)), ("m_curve_height", Field::Num(1.0)), ("m_type_name", Field::Str(name)),
+            ],
+            flow_cfs: None, description: String::new(), neck_ft: None, round, surface_ft2,
+        };
+        let net = build(
+            [
+                duct(1, 1.0, "", None, None),
+                duct(2, 1.0, "Rectangular Duct", None, None),
+                duct(3, 2.0, "", None, None),
+                duct(4, 1.0, "", Some(false), None),
+                duct(5, 1.0, "", None, Some(40.0)),
+                duct(6, 1.0, "", None, Some(31.4)),
+                duct(7, 1.0, "", None, Some(5.0)),
+            ],
+            &HashSet::new(),
+        );
+        let round: Vec<bool> = net.nodes.iter().map(|n| matches!(n.kind, NodeKind::Duct { round: true, .. })).collect();
+        // Unnamed square; named rectangular; not square; MagiCAD's R code;
+        // 4 d around; pi d around; an area that fits neither.
+        assert_eq!(round, [true, false, false, false, false, true, true]);
+        assert_eq!(round_from_parameters(&[serde_json::json!({"name": "MC Product Code Instance", "value": "MAGID-C1-125"})]), Some(true));
     }
 
     #[test]

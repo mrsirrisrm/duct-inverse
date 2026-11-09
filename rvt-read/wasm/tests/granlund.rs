@@ -40,6 +40,21 @@ fn revit_alone_rates_as_with_its_ifc() {
     for (x, y) in bands(a).iter().zip(bands(p)) {
         assert!((x - y).abs() < 1.0, "{:?} alone, {:?} with the IFC", bands(a), bands(p));
     }
+    // Every duct as fast, round alone as with the IFC's profiles: the Ø125
+    // one 5722128 at 3.67 m/s for 45 L/s, not 125 x 125's 2.88.
+    let speeds = |v: &Value| v["blocks"].as_array().unwrap().iter().map(|b| (b["element"].clone(), b["velocity_m_s"].as_f64())).collect::<Vec<_>>();
+    for ((e, x), (_, y)) in speeds(a).iter().zip(speeds(p)) {
+        assert!(x.zip(y).map_or(x == &y, |(x, y)| (x - y).abs() < 0.01 * y), "{e}: {x:?} alone, {y:?} with the IFC");
+    }
+    let v = speeds(a).into_iter().find(|(e, _)| e == 5722128).and_then(|(_, v)| v).expect("5722128 on the path");
+    assert!((v - 3.67).abs() < 0.05, "{v}");
+    // Every terminal counted once.
+    for r in [&alone, &paired] {
+        assert_eq!(r["terminal_tally"]["total"], r["healed"]["terminals"]);
+        let sum: u64 = r["terminal_tally"].as_object().unwrap().iter().filter(|(k, _)| *k != "total").map(|(_, n)| n.as_u64().unwrap()).sum();
+        assert_eq!(Some(sum), r["healed"]["terminals"].as_u64());
+        assert_eq!(r["terminal_tally"].get("other"), None);
+    }
     // The same issues: the 15 terminals no unit feeds (one joined to no duct
     // at all), and the unit's sound power estimated.
     let issues = |v: &Value| v["issues"].as_array().unwrap().iter().map(|i| (i["kind"].clone(), i["elements"].as_array().unwrap().len())).collect::<Vec<_>>();

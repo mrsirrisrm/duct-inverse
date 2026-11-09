@@ -933,13 +933,23 @@ pub fn merge(net: &mut Network, elements: &[IfcElement]) -> MergeReport {
             node.systems = e.systems.clone();
             node.flow = e.flow;
         }
+        // A design flow the Revit model left out, the IFC's.
+        if node.flow.is_none() {
+            node.flow = e.flow;
+        }
         let (mut size, mut location) = (None, None);
         match e.shape {
             Some(Shape::Axis { start, end, width, height, round }) => {
                 location = Some(mul(add(start, end), 0.5));
-                if node.kind == NodeKind::DuctNoGeometry {
-                    node.kind = NodeKind::Duct { start, end, width, height, round };
-                    report.geometry += 1;
+                match &mut node.kind {
+                    NodeKind::DuctNoGeometry => {
+                        node.kind = NodeKind::Duct { start, end, width, height, round };
+                        report.geometry += 1;
+                    }
+                    // The profile is drawn where the Revit model's shape is
+                    // only named, or not at all: its section stands.
+                    NodeKind::Duct { width: w, height: h, round: r, .. } => (*w, *h, *r) = (width, height, round),
+                    _ => {}
                 }
             }
             Some(Shape::Box { frame, min, max }) => {
@@ -1016,6 +1026,25 @@ mod tests {
         assert!(close(start, [1.0, 2.0, 3.0]) && close(end, [1.0, 2.0, 3.5]), "{start:?} -> {end:?}");
         assert!((width - 0.2).abs() < 1e-9 && (height - 0.2).abs() < 1e-9);
         assert!(round, "its arcs' points lie on the circle its extent inscribes");
+    }
+
+    /// A Revit duct read as square, and with no flow, takes a matched IFC
+    /// segment's round profile and its flow.
+    #[test]
+    fn merged_duct_takes_the_ifc_section() {
+        use crate::network::Node;
+        let mut elements = parse(DUCT.as_bytes());
+        elements[0].flow = Some(0.045);
+        let mut net = Network::default();
+        let duct = net.add_node(Node {
+            id: 42, kind: NodeKind::Duct { start: [0.0; 3], end: [0.0, 0.0, 0.5], width: 0.2, height: 0.2, round: false },
+            family: String::new(), type_name: String::new(), systems: Vec::new(), location: None, flow: None,
+            ifc: None, description: String::new(), extent: None,
+        });
+        merge(&mut net, &elements);
+        let NodeKind::Duct { width, height, round, .. } = net.nodes[duct].kind else { panic!("not a duct") };
+        assert!(round && (width - 0.2).abs() < 1e-9 && (height - 0.2).abs() < 1e-9);
+        assert_eq!(net.nodes[duct].flow, Some(0.045));
     }
 
     /// Two spaces, 5 x 4 x 3 m at x = 10 m and a 2 x 2 m one inside it, in

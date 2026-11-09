@@ -29,6 +29,8 @@ pub fn parse(json: &Value) -> Network {
             flow_cfs: build::flow_from_parameters(e["parameters"].as_array().into_iter().flatten()),
             description: build::description_from_parameters(e["parameters"].as_array().into_iter().flatten()),
             neck_ft: build::neck_from_parameters(e["parameters"].as_array().into_iter().flatten()),
+            round: build::round_from_parameters(e["parameters"].as_array().into_iter().flatten()),
+            surface_ft2: build::surface_from_parameters(e["parameters"].as_array().into_iter().flatten()),
         })
     });
     build::build(duct_elements, &decoded)
