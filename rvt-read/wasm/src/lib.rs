@@ -251,14 +251,22 @@ fn issues(net: &Network) -> Vec<Value> {
     let (ductless, unserved): (Vec<usize>, Vec<usize>) =
         terminals.iter().filter(|(_, served)| !served).map(|&(n, _)| n).partition(|&n| adj[n].is_empty());
     let ids = |v: &[usize]| v.iter().map(|&n| net.nodes[n].id).collect::<Vec<_>>();
+    // The systems they are on name what feeds them: a unit not in the model.
+    let mut on_systems: Vec<&str> = unserved.iter().flat_map(|&n| net.nodes[n].systems.iter().map(String::as_str)).filter(|s| !s.is_empty()).collect();
+    on_systems.sort_unstable();
+    on_systems.dedup();
     let unserved = (!unserved.is_empty()).then(|| {
         json!({
             "kind": "terminals_unserved",
             "severity": "warning",
             "elements": ids(&unserved),
             "message": format!(
-                "{} of the {} terminals are on ductwork that reaches no unit, so they are left out: a room they serve is rated without them, or not at all",
-                unserved.len(), terminals.len()
+                "{} of the {} terminals are on ductwork that reaches no unit, so they are left out: a room they serve is rated without them, or not at all{}",
+                unserved.len(), terminals.len(),
+                match on_systems.len() {
+                    0 => String::new(),
+                    k => format!(". They are on {}{}", on_systems.iter().take(6).copied().collect::<Vec<_>>().join(", "), if k > 6 { format!(" and {} more systems", k - 6) } else { String::new() }),
+                }
             ),
             "check": "their ductwork for a gap, or for a unit not in this model (in a linked one)",
         })
@@ -273,6 +281,29 @@ fn issues(net: &Network) -> Vec<Value> {
                 ductless.len(), terminals.len()
             ),
             "check": "whether they return through the ceiling void (no duct to model), or their ducts are missing or in a linked model",
+        })
+    });
+    // Units on ductwork that reaches no terminal: a ceiling exhaust unit's
+    // inlet is its own, in the room. Not radiators (on pipes) or outside
+    // air's markers.
+    let island = graph::islands(net);
+    let with_terminals: std::collections::HashSet<usize> = terminals.iter().map(|&(n, _)| island[n]).collect();
+    let bare: Vec<usize> = (0..net.nodes.len())
+        .filter(|&u| net.nodes[u].kind == NodeKind::Equipment && !with_terminals.contains(&island[u]))
+        .filter(|&u| adj[u].iter().any(|&m| matches!(net.nodes[m].kind, NodeKind::Duct { .. } | NodeKind::DuctNoGeometry | NodeKind::Fitting)))
+        .filter(|&u| !net.nodes[u].systems.iter().any(|s| outside_air(s)))
+        .collect();
+    let bare = (!bare.is_empty()).then(|| {
+        json!({
+            "kind": "units_without_terminals",
+            "severity": "warning",
+            "elements": ids(&bare),
+            "message": format!(
+                "{} on ductwork that reaches no terminal ({}): a unit whose inlet or outlet is its own, in the room (a ceiling exhaust unit), puts its noise there unrated",
+                if bare.len() == 1 { "1 unit is".to_string() } else { format!("{} units are", bare.len()) },
+                bare.iter().take(3).map(|&u| net.nodes[u].family.as_str()).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", ")
+            ),
+            "check": "whether each opens into a room (then its noise there by hand, from its sound data), or its terminals are missing from the model",
         })
     });
     path::overfed(net)
@@ -303,6 +334,7 @@ fn issues(net: &Network) -> Vec<Value> {
         })
         .chain(unserved)
         .chain(ductless)
+        .chain(bare)
         .collect()
 }
 
