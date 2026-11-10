@@ -538,6 +538,22 @@ pub fn analyse_bytes(
     };
 
     let mut issues = issues(&net);
+    // An IFC on its own that records no connections: its network is the
+    // geometry's guess, which misses joins between fittings.
+    if let (false, Some(i)) = (from_rvt, &ifc) {
+        if i["ports"] == 0 && i["elements"].as_u64().is_some_and(|n| n > 0) {
+            issues.insert(0, json!({
+                "kind": "ifc_no_connections",
+                "severity": "warning",
+                "elements": [],
+                "message": format!(
+                    "the IFC records no connections between its {} elements (no ports), so its network is pieced together from their geometry, which misses some joins between fittings: terminals it leaves unserved may be joined in the model",
+                    i["elements"]
+                ),
+                "check": "an export with ports (Revit's IFC export connects them by default), or the Revit model itself",
+            }));
+        }
+    }
     let systems: Vec<_> = path::unit_systems(&net).into_iter().filter(|u| !outside_air(&u.system)).collect();
     if systems.is_empty() {
         return Ok(json!({ "recorded": recorded, "ifc": ifc, "healed": healed, "classified": classified(&net), "issues": issues, "path": null }));
