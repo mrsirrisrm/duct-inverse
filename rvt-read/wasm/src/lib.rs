@@ -78,7 +78,7 @@ fn outdoor_termination(node: &duct_heal::network::Node) -> bool {
 /// none); a path longer than the engine takes; or reaching a unit only
 /// through ductwork in none of its systems, by the nearest unit. With them,
 /// every terminal counted once under what became of it, `other` for none.
-fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_long: &[usize]) -> (Vec<Value>, Value) {
+fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_long: &[usize], space_of: &dyn Fn(usize) -> Option<String>) -> (Vec<Value>, Value) {
     let (_, terminals) = terminals_served(net);
     let (mut on_tree, mut outside) = (vec![false; net.nodes.len()], vec![false; net.nodes.len()]);
     for (tree, system, _) in path::unit_trees(net) {
@@ -143,13 +143,17 @@ fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_l
         .map(|(u, ts)| {
             let unit = &net.nodes[u];
             let q: f64 = ts.iter().filter_map(|&t| net.nodes[t].flow).sum();
+            let mut rooms: Vec<String> = ts.iter().filter_map(|&t| space_of(t)).collect();
+            rooms.sort_unstable();
+            rooms.dedup();
             json!({
                 "kind": "terminals_off_system",
                 "severity": "warning",
                 "elements": ts.iter().map(|&t| net.nodes[t].id).collect::<Vec<_>>(),
                 "message": format!(
-                    "{} terminals ({:.0} L/s) reach unit {} ({}) only through ductwork assigned to none of its air systems, so they are left out: a room they serve is rated without them, or not at all",
-                    ts.len(), q * 1000.0, unit.id, unit.family
+                    "{} terminals ({:.0} L/s) reach unit {} ({}) only through ductwork assigned to none of its air systems, so they are left out: a room they serve is rated without them, or not at all{}",
+                    ts.len(), q * 1000.0, unit.id, unit.family,
+                    if rooms.is_empty() { String::new() } else { format!(". They are in {}", rooms.join("; ")) }
                 ),
                 "check": "which system their ductwork belongs to, and assign it to the unit's",
             })
@@ -265,9 +269,17 @@ fn issues(net: &Network) -> Vec<Value> {
                 unserved.len(), terminals.len(),
                 match on_systems.len() {
                     0 => String::new(),
-                    k => format!(". They are on {}{}", on_systems.iter().take(6).copied().collect::<Vec<_>>().join(", "), if k > 6 { format!(" and {} more systems", k - 6) } else { String::new() }),
+                    k => format!(
+                        ". They are on {}{}",
+                        on_systems.iter().take(6).copied().collect::<Vec<_>>().join("; "),
+                        match k { ..=6 => String::new(), 7 => "; and 1 more system".into(), _ => format!("; and {} more systems", k - 6) }
+                    ),
                 }
             ),
+            "details": on_systems.iter().map(|sys| {
+                let on: Vec<i64> = unserved.iter().filter(|&&n| net.nodes[n].systems.iter().any(|x| x == sys)).map(|&n| net.nodes[n].id).collect();
+                format!("{sys}: {} terminals, {}", on.len(), on.iter().map(i64::to_string).collect::<Vec<_>>().join(", "))
+            }).collect::<Vec<_>>(),
             "check": "their ductwork for a gap, or for a unit not in this model (in a linked one)",
         })
     });
@@ -299,11 +311,11 @@ fn issues(net: &Network) -> Vec<Value> {
             "severity": "warning",
             "elements": ids(&bare),
             "message": format!(
-                "{} on ductwork that reaches no terminal ({}): a unit whose inlet or outlet is its own, in the room (a ceiling exhaust unit), puts its noise there unrated",
+                "{} on ductwork that reaches no terminal ({}): either its inlet or outlet opens into the room (a ceiling exhaust unit's does), and its noise there is not rated, or its ductwork is missing from the model",
                 if bare.len() == 1 { "1 unit is".to_string() } else { format!("{} units are", bare.len()) },
                 bare.iter().take(3).map(|&u| net.nodes[u].family.as_str()).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", ")
             ),
-            "check": "whether each opens into a room (then its noise there by hand, from its sound data), or its terminals are missing from the model",
+            "check": "whether each opens into a room (then its noise there by hand, from its sound data), or its ductwork and terminals are missing from the model",
         })
     });
     path::overfed(net)
@@ -536,6 +548,7 @@ pub fn analyse_bytes(
     };
     // A unit taking back from its rooms far more than it supplies them.
     let mut seen_units = std::collections::HashSet::new();
+    let mut lopsided = Vec::new();
     for u in 0..systems.len() {
         let root = systems[u].tree.root;
         if !seen_units.insert(root) {
@@ -545,7 +558,7 @@ pub fn analyse_bytes(
         let (supply, back) = (sum(false), sum(true));
         if supply > 0.0 && back > 1.5 * supply {
             let unit = &net.nodes[root];
-            issues.push(json!({
+            lopsided.push((back / supply, json!({
                 "kind": "unit_returns_more_than_supplied",
                 "severity": "warning",
                 "elements": [unit.id],
@@ -554,9 +567,12 @@ pub fn analyse_bytes(
                     unit.id, unit.family, back * 1000.0, supply * 1000.0, back / supply
                 ),
                 "check": "the return terminals' design flows (a default, or another parameter's figure) against the supply's",
-            }));
+            })));
         }
     }
+    // The most lopsided, likeliest wrong, first.
+    lopsided.sort_by(|a, b| b.0.total_cmp(&a.0));
+    issues.extend(lopsided.into_iter().map(|(_, i)| i));
     for (u, rated) in off {
         let (u, q_unit) = (&systems[u], units[u].0);
         let unit = &net.nodes[u.tree.root];
@@ -607,7 +623,7 @@ pub fn analyse_bytes(
         }
     }
     let terminals_rated = paths.len();
-    let (unrated, terminal_tally) = unrated_issues(&net, &paths.iter().map(|p| p.1).collect(), &too_long);
+    let (unrated, terminal_tally) = unrated_issues(&net, &paths.iter().map(|p| p.1).collect(), &too_long, &|t| locate(t).and_then(|p| ifc::space_at(&spaces, p)).map(|k| spaces[k].name.clone()));
     issues.extend(unrated);
     issues.extend(feeding_issues(&net, &paths.iter().map(|p| systems[p.0].tree.root).collect()));
     if paths.is_empty() {
@@ -1058,7 +1074,7 @@ mod tests {
             net.connect(a, b, EdgeSource::Recorded);
         }
         let rated = [diffuser].into_iter().collect();
-        let (issues, tally) = unrated_issues(&net, &rated, &[]);
+        let (issues, tally) = unrated_issues(&net, &rated, &[], &|_| None);
         let kinds: Vec<(&str, &Value)> = issues.iter().map(|i| (i["kind"].as_str().unwrap(), &i["elements"])).collect();
         assert_eq!(kinds, [("terminals_off_system", &serde_json::json!([7])), ("terminals_no_flow", &serde_json::json!([4]))]);
         // Every terminal under one head, the cap with no issue among them.
