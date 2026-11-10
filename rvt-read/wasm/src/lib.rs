@@ -148,7 +148,7 @@ fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_l
                 "severity": "warning",
                 "elements": ts.iter().map(|&t| net.nodes[t].id).collect::<Vec<_>>(),
                 "message": format!(
-                    "{} terminals ({:.0} L/s) reach unit {} ({}) only through ductwork assigned to none of its air systems, so the rooms they serve are not rated",
+                    "{} terminals ({:.0} L/s) reach unit {} ({}) only through ductwork assigned to none of its air systems, so they are left out: a room they serve is rated without them, or not at all",
                     ts.len(), q * 1000.0, unit.id, unit.family
                 ),
                 "check": "which system their ductwork belongs to, and assign it to the unit's",
@@ -159,7 +159,7 @@ fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_l
         out.push(json!({
             "kind": "terminals_path_too_long",
             "severity": "warning",
-            "message": format!("{} terminals' paths map to more than the engine's {MAX_BLOCKS} elements, so the rooms they serve are not rated", long.len()),
+            "message": format!("{} terminals' paths map to more than the engine's {MAX_BLOCKS} elements, so they are left out: a room they serve is rated without them, or not at all", long.len()),
             "elements": long,
             "check": "these rooms by hand",
         }));
@@ -168,7 +168,7 @@ fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_l
         out.push(json!({
             "kind": "terminals_no_flow",
             "severity": "warning",
-            "message": format!("{} terminals connected to a unit have no design flow, so the rooms they serve are not rated", no_flow.len()),
+            "message": format!("{} terminals connected to a unit have no design flow, so they are left out: a room they serve is rated without them, or not at all", no_flow.len()),
             "elements": no_flow,
             "check": "their Flow parameter",
         }));
@@ -257,7 +257,7 @@ fn issues(net: &Network) -> Vec<Value> {
             "severity": "warning",
             "elements": ids(&unserved),
             "message": format!(
-                "{} of the {} terminals are on ductwork that reaches no unit, so the rooms they serve are not rated",
+                "{} of the {} terminals are on ductwork that reaches no unit, so they are left out: a room they serve is rated without them, or not at all",
                 unserved.len(), terminals.len()
             ),
             "check": "their ductwork for a gap, or for a unit not in this model (in a linked one)",
@@ -269,7 +269,7 @@ fn issues(net: &Network) -> Vec<Value> {
             "severity": "warning",
             "elements": ids(&ductless),
             "message": format!(
-                "{} of the {} terminals join no duct at all, so the rooms they serve are not rated",
+                "{} of the {} terminals join no duct at all, so they are left out: a room they serve is rated without them, or not at all",
                 ductless.len(), terminals.len()
             ),
             "check": "whether they return through the ceiling void (no duct to model), or their ducts are missing or in a linked model",
@@ -313,7 +313,8 @@ fn grouped(issues: Vec<Value>) -> Vec<Value> {
         "unit_flow_mismatch" => Some(format!("{n} units' Air Flow differs from what their terminals sum to, which the ratings use")),
         "duct_velocity" => Some(format!("{n} ducts on the worst room's path run over CIBSE Guide B table 5.2's limit above a suspended ceiling for a normal space")),
         "unit_feeds_units" => Some(format!("{n} groups of units start no rated path but their ductwork joins rated units, so where they supply them their noise is not rated")),
-        "terminals_off_system" => Some(format!("{n} units reach terminals only through ductwork assigned to none of their air systems, so the rooms those serve are not rated")),
+        "terminals_off_system" => Some(format!("{n} units reach terminals only through ductwork assigned to none of their air systems, so those terminals are left out: a room they serve is rated without them, or not at all")),
+        "unit_returns_more_than_supplied" => Some(format!("{n} units take back through their return terminals over 1.5 times what they supply, so their return sides may be rated at flows that are not their design's")),
         "plenum_unsized" => Some(format!("{n} plenums on the worst room's path have no extent, so their loss is left out")),
         "fitting_unclassified" => Some(format!("{n} fittings on the worst room's path are of no type the rules know, so they are passed through with neither loss nor noise")),
         _ => None,
@@ -470,16 +471,20 @@ pub fn analyse_bytes(
     }
     // Each unit's flow, its terminals' sum, and its sound power: no sound
     // data in the model, so without the unit's own an estimate from its flow.
+    // Revit's classification where its system type gives one (2 return
+    // air, 3 exhaust air), else the name.
+    let from_rooms: Vec<bool> = systems
+        .iter()
+        .map(|u| match net.classifications.get(&u.system) {
+            Some(&c) => c == 2 || c == 3,
+            None => returns_air(&u.system),
+        })
+        .collect();
     let units: Vec<(f64, [f64; N_BANDS])> = systems
         .iter()
-        .map(|u| {
+        .zip(&from_rooms)
+        .map(|(u, &from_rooms)| {
             let q = u.flow[u.tree.root];
-            // Revit's classification where its system type gives one (2
-            // return air, 3 exhaust air), else the name.
-            let from_rooms = match net.classifications.get(&u.system) {
-                Some(&c) => c == 2 || c == 3,
-                None => returns_air(&u.system),
-            };
             let pressure = if from_rooms { RETURN_PA } else { SUPPLY_PA };
             (q, source.unwrap_or_else(|| fan_estimate(q, pressure)))
         })
@@ -489,6 +494,37 @@ pub fn analyse_bytes(
     // The furthest out first.
     let mut off: Vec<(usize, f64)> = (0..systems.len()).filter_map(|u| Some((u, mismatched(u)?))).collect();
     off.sort_by(|a, b| (units[b.0].0 / b.1).ln().abs().total_cmp(&(units[a.0].0 / a.1).ln().abs()));
+    // Many units carrying one Air Flow: their type's default, not a design.
+    let shared_air_flow = {
+        let mut count = std::collections::BTreeMap::<i64, usize>::new();
+        for &(_, r) in &off {
+            *count.entry((r * 1000.0).round() as i64).or_default() += 1;
+        }
+        count.into_iter().max_by_key(|&(_, k)| k).filter(|&(_, k)| k >= 3 && 2 * k >= off.len())
+    };
+    // A unit taking back from its rooms far more than it supplies them.
+    let mut seen_units = std::collections::HashSet::new();
+    for u in 0..systems.len() {
+        let root = systems[u].tree.root;
+        if !seen_units.insert(root) {
+            continue;
+        }
+        let sum = |back: bool| -> f64 { (0..systems.len()).filter(|&v| systems[v].tree.root == root && from_rooms[v] == back).map(|v| units[v].0).sum() };
+        let (supply, back) = (sum(false), sum(true));
+        if supply > 0.0 && back > 1.5 * supply {
+            let unit = &net.nodes[root];
+            issues.push(json!({
+                "kind": "unit_returns_more_than_supplied",
+                "severity": "warning",
+                "elements": [unit.id],
+                "message": format!(
+                    "unit {} ({}) takes back {:.0} L/s through its return terminals but supplies {:.0} L/s, {:.1} times as much: a balance few designs have, so its return side may be rated at flows that are not its design's",
+                    unit.id, unit.family, back * 1000.0, supply * 1000.0, back / supply
+                ),
+                "check": "the return terminals' design flows (a default, or another parameter's figure) against the supply's",
+            }));
+        }
+    }
     for (u, rated) in off {
         let (u, q_unit) = (&systems[u], units[u].0);
         let unit = &net.nodes[u.tree.root];
@@ -851,6 +887,15 @@ pub fn analyse_bytes(
     grads.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
 
     let engine_ms = lap();
+    let mut issues = grouped(issues);
+    if let (Some((l_s, k)), Some(i)) = (shared_air_flow, issues.iter_mut().find(|i| i["kind"] == "unit_flow_mismatch")) {
+        let n = i["elements"].as_array().map_or(0, Vec::len);
+        let which = if k == n { "all".to_string() } else { format!("{k} of them") };
+        i["message"] = json!(format!(
+            "{}; {which} carry the same Air Flow, {l_s} L/s, more likely their type's default than a design figure",
+            i["message"].as_str().unwrap_or_default()
+        ));
+    }
     Ok(json!({
         "timings_ms": { "decode": decode, "heal": heal_ms, "path": path_ms, "engine": engine_ms },
         "recorded": recorded,
@@ -861,7 +906,7 @@ pub fn analyse_bytes(
         "runs_on_ducts": runs_on_ducts,
         "healed": healed,
         "classified": classified(&net),
-        "issues": grouped(issues),
+        "issues": issues,
         "path": {
             "unit": { "id": unit.id, "family": unit.family, "air_flow_l_s": unit.flow.map(|q| q * 1000.0) },
             "system": systems[u].system,
