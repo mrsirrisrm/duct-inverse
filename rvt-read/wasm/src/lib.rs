@@ -65,6 +65,18 @@ fn clock_ms() -> f64 {
     }
 }
 
+/// Why a terminal serves no room whatever it is joined to: on an outside
+/// air system, or an outdoor termination with no design flow.
+fn outdoors(node: &duct_heal::network::Node) -> Option<&'static str> {
+    if node.systems.iter().any(|s| outside_air(s)) {
+        Some("outside_air")
+    } else if !node.flow.is_some_and(|q| q > 0.0) && outdoor_termination(node) {
+        Some("outdoor_termination")
+    } else {
+        None
+    }
+}
+
 /// Whether a terminal is an outdoor termination by its family or type name
 /// (a cap, louvre, hood or intake): it serves no room.
 fn outdoor_termination(node: &duct_heal::network::Node) -> bool {
@@ -109,7 +121,9 @@ fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_l
     let mut tally = std::collections::BTreeMap::<&str, usize>::new();
     for &(t, served) in &terminals {
         let node = &net.nodes[t];
-        let bucket = if !served {
+        let bucket = if let (false, Some(why)) = (rated.contains(&t), outdoors(node)) {
+            why
+        } else if !served {
             if adj_empty(t) { "ductless" } else { "unserved" }
         } else if rated.contains(&t) {
             "rated"
@@ -151,8 +165,8 @@ fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_l
                 "severity": "warning",
                 "elements": ts.iter().map(|&t| net.nodes[t].id).collect::<Vec<_>>(),
                 "message": format!(
-                    "{} terminals ({:.0} L/s) reach unit {} ({}) only through ductwork assigned to none of its air systems, so they are left out: a room they serve is rated without them, or not at all{}",
-                    ts.len(), q * 1000.0, unit.id, unit.family,
+                    "{} ({:.0} L/s) reach unit {} ({}) only through ductwork assigned to none of its air systems, so they are left out: a room they serve is rated without them, or not at all{}",
+                    if ts.len() == 1 { "1 terminal".to_string() } else { format!("{} terminals", ts.len()) }, q * 1000.0, unit.id, unit.family,
                     if rooms.is_empty() { String::new() } else { format!(". They are in {}", rooms.join("; ")) }
                 ),
                 "check": "which system their ductwork belongs to, and assign it to the unit's",
@@ -253,7 +267,7 @@ fn issues(net: &Network) -> Vec<Value> {
     // Those joined to nothing at all apart from those on ductwork that stops
     // short of a unit: most of the first return through a ceiling void.
     let (ductless, unserved): (Vec<usize>, Vec<usize>) =
-        terminals.iter().filter(|(_, served)| !served).map(|&(n, _)| n).partition(|&n| adj[n].is_empty());
+        terminals.iter().filter(|&&(n, served)| !served && outdoors(&net.nodes[n]).is_none()).map(|&(n, _)| n).partition(|&n| adj[n].is_empty());
     let ids = |v: &[usize]| v.iter().map(|&n| net.nodes[n].id).collect::<Vec<_>>();
     // The systems they are on name what feeds them: a unit not in the model.
     let mut on_systems: Vec<&str> = unserved.iter().flat_map(|&n| net.nodes[n].systems.iter().map(String::as_str)).filter(|s| !s.is_empty()).collect();
@@ -278,7 +292,7 @@ fn issues(net: &Network) -> Vec<Value> {
             ),
             "details": on_systems.iter().map(|sys| {
                 let on: Vec<i64> = unserved.iter().filter(|&&n| net.nodes[n].systems.iter().any(|x| x == sys)).map(|&n| net.nodes[n].id).collect();
-                format!("{sys}: {} terminals, {}", on.len(), on.iter().map(i64::to_string).collect::<Vec<_>>().join(", "))
+                format!("{sys}: {} terminal{}, {}", on.len(), if on.len() == 1 { "" } else { "s" }, on.iter().map(i64::to_string).collect::<Vec<_>>().join(", "))
             }).collect::<Vec<_>>(),
             "check": "their ductwork for a gap, or for a unit not in this model (in a linked one)",
         })
@@ -431,9 +445,14 @@ fn returns_air(system: &str) -> bool {
 /// jäteilma, coded JI; relief) or drawn in (ulkoilma, UI; outdoor air). It
 /// serves no room.
 fn outside_air(system: &str) -> bool {
-    const WORDS: [&str; 5] = ["jäteilma", "ulkoilma", "relief", "outdoor air", "outside air"];
+    // Finnish jäteilma (exhaust out), ulkoilma (outdoor), raitisilma (fresh).
+    const WORDS: [&str; 6] = ["jäteilma", "ulkoilma", "raitisilma", "relief", "outdoor air", "outside air"];
     let name = system.to_lowercase();
-    let coded = |code: &str| name.strip_prefix(code).is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+    // MagiCAD's codes, the name's start or in brackets: "JI6", "... (UI2)".
+    let coded = |code: &str| {
+        let after = |rest: &str| rest.strip_prefix(code).is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()));
+        after(&name) || name.match_indices('(').any(|(i, _)| after(&name[i + 1..]))
+    };
     WORDS.iter().any(|w| name.contains(w)) || coded("ji") || coded("ui")
 }
 
@@ -1138,7 +1157,7 @@ mod tests {
         for name in ["Mechanical Return Air 2", "Mechanical Exhaust Air 1", "Poistoilma, asunto 8 (P8)", "Extract 3"] {
             assert!(super::returns_air(name) && !super::outside_air(name), "{name}");
         }
-        for name in ["JI6", "UI2", "Jäteilma", "Relief Air 1", "Mechanical Outdoor Air"] {
+        for name in ["JI6", "UI2", "Jäteilma", "Relief Air 1", "Mechanical Outdoor Air", "Raitisilma, autotalli (UI2)", "Ulkoilma, porrashuone (UI9)"] {
             assert!(super::outside_air(name), "{name}");
         }
         for name in ["Mechanical Supply Air 1", "Tuloilma, yleiset tilat (T1)", "JIT", "Supply"] {

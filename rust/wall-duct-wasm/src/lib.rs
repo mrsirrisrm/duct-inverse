@@ -167,9 +167,10 @@ fn describe_block(idx: usize, bp: &BlockParams, q_m3s: f64) -> BlockSummary {
     let mm = |x: f64| (x * 1000.0) as i64;
     let label = match *bp {
         BlockParams::Segment { length_m, width_m, height_m, lining_m, .. } => {
-            let v = q_m3s / (width_m * height_m);
+            // In its airway, inside the lining.
+            let v = q_m3s / ((width_m - 2.0 * lining_m) * (height_m - 2.0 * lining_m));
             let lining = if lining_m > 1e-4 {
-                format!(", lined {} mm", mm(lining_m))
+                format!(", lined {} mm (v in its airway)", mm(lining_m))
             } else {
                 ", unlined".to_string()
             };
@@ -419,7 +420,12 @@ fn invalid(input: &InputParams) -> Option<String> {
                     InputBlock::Segment { length_m, width_m, height_m, lining_m } => pos("width_m", width_m)
                         .or_else(|| pos("height_m", height_m))
                         .or_else(|| (length_m < 0.0).then(|| format!("length_m must not be negative, got {length_m}")))
-                        .or_else(|| (lining_m < 0.0 || 2.0 * lining_m >= width_m.min(height_m)).then(|| format!("lining_m {lining_m} leaves no airway in {width_m} x {height_m}"))),
+                        .or_else(|| (lining_m < 0.0 || 2.0 * lining_m >= width_m.min(height_m)).then(|| format!("lining_m {lining_m} leaves no airway in {width_m} x {height_m}")))
+                        // The lined-duct fits are for 25 to 50 mm linings in a
+                        // duct mostly open: past 100 mm, or half the smaller
+                        // side lined, they say nothing.
+                        .or_else(|| (lining_m > 0.1).then(|| format!("lining_m {lining_m} is past the lined-duct fits (up to 0.1 m)")))
+                        .or_else(|| (4.0 * lining_m > width_m.min(height_m)).then(|| format!("lining_m {lining_m} lines over half of {width_m} x {height_m}'s smaller side, past the lined-duct fits"))),
                     InputBlock::Bend { width_m, height_m } | InputBlock::Diffuser { width_m, height_m } => pos("width_m", width_m).or_else(|| pos("height_m", height_m)),
                     InputBlock::Attenuator { length_m, width_m, height_m, free_area_ratio, splitter_m } => pos("length_m", length_m)
                         .or_else(|| pos("width_m", width_m))
@@ -484,6 +490,8 @@ mod tests {
         assert!(evaluate_input(input(0.2, 0.025)).is_ok());
         assert!(evaluate_input(input(0.0, 0.025)).err().unwrap().contains("volume_flow_m3s"));
         assert!(evaluate_input(input(0.2, 0.1)).err().unwrap().contains("no airway"));
+        assert!(evaluate_input(input(0.2, 0.06)).err().unwrap().contains("over half"));
+        assert!(evaluate_input(input(-0.2, 0.025)).is_err());
     }
 
     #[test]

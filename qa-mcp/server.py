@@ -238,7 +238,7 @@ def tool_engine(args):
 
 
 SUITES = {
-    "engine": (ENGINE, ["cargo", "test", "--release", "-p", "wall-duct-core"]),
+    "engine": (ENGINE, ["cargo", "test", "--release", "-p", "wall-duct-core", "-p", "wall-duct-wasm"]),
     "heal": (REPO / "rvt-read", ["cargo", "test", "--release", "--features", "rvt"]),
     "pipeline": (PIPELINE, ["cargo", "test", "--release"]),
 }
