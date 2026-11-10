@@ -606,6 +606,26 @@ pub fn analyse_bytes(
         .map(|r| r.terminals.iter().filter_map(|&k| fastest(k)).max_by(|a, b| a.0.total_cmp(&b.0)).filter(|f| f.0 > IMPLAUSIBLE_M_S))
         .collect();
     let doubtful: Vec<usize> = (0..rated.len()).filter(|&i| implausible[i].is_some()).collect();
+    // Terminals in no space, each rated alone in a stand-in room.
+    let spaceless: Vec<usize> = (0..terminals.len()).filter(|&k| terminals[k].space.is_none()).collect();
+    if !spaceless.is_empty() {
+        let loud = rated.iter().take(20).filter(|r| r.space.is_none()).count();
+        let (m3, at) = (rooms::DEFAULT_ROOM_M3, rooms::DEFAULT_RECEIVER_M);
+        issues.push(json!({
+            "kind": "terminals_in_no_space",
+            "severity": "warning",
+            "elements": spaceless.iter().map(|&k| net.nodes[paths[k].1].id).collect::<Vec<_>>(),
+            "message": if spaces.is_empty() {
+                format!("the model has no spaces, so all {} rated terminals are rated alone, each in {m3:.0} m3 at {at:.0} m: every NC is a stand-in for its room's", spaceless.len())
+            } else {
+                format!(
+                    "{} of the {} rated terminals are in no space, so each is rated alone in {m3:.0} m3 at {at:.0} m: their NC is a stand-in, and {loud} of the 20 loudest rooms are such terminals",
+                    spaceless.len(), terminals.len()
+                )
+            },
+            "check": if spaces.is_empty() { "the model's spaces (Revit MEP spaces, or IfcSpace in its IFC export)" } else { "the spaces around these terminals, and that the terminals sit inside them" },
+        }));
+    }
     if !doubtful.is_empty() {
         let (v, duct) = doubtful.iter().filter_map(|&i| implausible[i]).max_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
         let name = |r: &rooms::RoomRating| r.space.map_or("a terminal in no space".to_string(), |k| spaces[k].name.clone());
@@ -619,6 +639,10 @@ pub fn analyse_bytes(
                 doubtful.iter().take(5).map(|&i| format!("{} NC {}", name(&rated[i]), rated[i].nc)).collect::<Vec<_>>().join(", ")
             ),
             "check": "the terminals' design flows and the duct sizes on these paths (the elements are each room's fastest duct)",
+            "details": doubtful.iter().filter_map(|&i| {
+                let (v, duct) = implausible[i]?;
+                Some(format!("{} NC {}: duct {duct} at {v:.1} m/s", name(&rated[i]), rated[i].nc))
+            }).collect::<Vec<_>>(),
         }));
     }
     // What sets a room's rating: at the band nearest its NC curve, each
@@ -719,6 +743,17 @@ pub fn analyse_bytes(
     // The rating rests on the flows: with the unit's own, regenerated noise
     // would be 55 lg of their ratio away.
     if let Some(rated) = mismatched(u) {
+        // The worst room set aside the implausible ones, but its own rating
+        // rests on the same disagreement, under the limit.
+        if let Some(i) = issues.iter_mut().find(|i| i["kind"] == "room_flow_implausible") {
+            let m = format!(
+                "{}; the worst room, {}, is itself rated at {:.1} times its unit's Air Flow",
+                i["message"].as_str().unwrap_or_default(),
+                room.space.map_or("a terminal in no space".to_string(), |k| spaces[k].name.clone()),
+                q_unit / rated
+            );
+            i["message"] = json!(m);
+        }
         let at = issues.iter().position(|i| i["severity"] != "error").unwrap_or(issues.len());
         issues.insert(at, json!({
             "kind": "worst_room_flow_mismatch",
@@ -851,9 +886,10 @@ pub fn analyse_bytes(
         "terminals": terminals_json,
         "assumptions": [
             if source.is_some() { "source: every unit's sound power as given" } else { "source: each unit's system a forward-curved fan at its flow, 250 Pa for a supply and 125 Pa for a return or extract, by the Revit system type's classification, else the system's name (no sound data given)" },
+            "units: every mechanical equipment element (by its Revit category or IFC class, whatever its name) whose ductwork reaches terminals; classified.for_classifier lists the names no rule knows, which units and terminals are rated without",
             "systems whose terminals are outside, discharging or drawing in outdoor air by their names, are not rated",
             "terminals with no design flow named as caps, louvres, hoods or intakes are outdoor terminations, serving no room",
-            if revit_rooms { "rooms from the Revit model's MEP spaces, their volume their extent's" } else { "rooms from the IFC's spaces, their volume their extent's" },
+            if spaces.is_empty() { "rooms: the model has no spaces, so every terminal is rated alone" } else if revit_rooms { "rooms from the Revit model's MEP spaces, their volume their extent's" } else { "rooms from the IFC's spaces, their volume their extent's" },
             "rooms: a receiver at 1.2 m under each diffuser, every diffuser in the room reaching it by Schultz's equation (a normally furnished room) at its distance; the room rated at its worst receiver",
             "a terminal in no space: rated alone, in 50 m3 at 2 m",
             "breakout: each straight on a rated path over a room radiates through its walls (ASHRAE 1991, 0.8 mm galvanised steel) and a fibreglass tile ceiling (TM 5-805-4 table 7-1), from its midpoint",
