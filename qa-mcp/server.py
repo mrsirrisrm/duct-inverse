@@ -287,7 +287,10 @@ TOOLS = {
                "{kind: segment, length_m, width_m, height_m, lining_m} | {kind: bend, width_m, height_m} | "
                "{kind: attenuator, length_m, width_m, height_m, free_area_ratio, splitter_m} | "
                "{kind: diffuser, width_m, height_m} ]}. Returns NC, receiver SPL per band against the NC curve, "
-               "block labels and sensitivities.",
+               "block labels and sensitivities. The source types are fixed catalogue spectra shifted by "
+               "source_offset_db: they do not follow volume_flow (flow reaches the result through regenerated "
+               "noise only), unlike the pipeline, which estimates each unit's fan from its flow. Inputs that make no "
+               "physical sense (zero flow, a lining that fills the duct) are refused.",
                {"chain": {"type": "object"}}, ["chain"]),
     "run_tests": (tool_run_tests, "Run a test suite: engine (acoustic engine), heal (network reading), pipeline "
                   "(whole pipeline on the samples), or all. Minutes, not seconds.",

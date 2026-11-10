@@ -406,8 +406,37 @@ pub fn evaluate_params(input_source_type: String, params: Params) -> DesignFacts
     }
 }
 
+/// What makes no physical sense in an input, or `None`.
+fn invalid(input: &InputParams) -> Option<String> {
+    let pos = |what: &str, v: f64| (!(v > 0.0)).then(|| format!("{what} must be positive, got {v}"));
+    pos("volume_flow_m3s", input.volume_flow_m3s)
+        .or_else(|| pos("room_volume_m3", input.room_volume_m3))
+        .or_else(|| pos("receiver_distance_m", input.receiver_distance_m))
+        .or_else(|| {
+            input.blocks.iter().enumerate().find_map(|(i, b)| {
+                let at = |e: String| format!("block {i}: {e}");
+                match *b {
+                    InputBlock::Segment { length_m, width_m, height_m, lining_m } => pos("width_m", width_m)
+                        .or_else(|| pos("height_m", height_m))
+                        .or_else(|| (length_m < 0.0).then(|| format!("length_m must not be negative, got {length_m}")))
+                        .or_else(|| (lining_m < 0.0 || 2.0 * lining_m >= width_m.min(height_m)).then(|| format!("lining_m {lining_m} leaves no airway in {width_m} x {height_m}"))),
+                    InputBlock::Bend { width_m, height_m } | InputBlock::Diffuser { width_m, height_m } => pos("width_m", width_m).or_else(|| pos("height_m", height_m)),
+                    InputBlock::Attenuator { length_m, width_m, height_m, free_area_ratio, splitter_m } => pos("length_m", length_m)
+                        .or_else(|| pos("width_m", width_m))
+                        .or_else(|| pos("height_m", height_m))
+                        .or_else(|| pos("splitter_m", splitter_m))
+                        .or_else(|| (!(free_area_ratio > 0.0 && free_area_ratio < 1.0)).then(|| format!("free_area_ratio must be between 0 and 1, got {free_area_ratio}"))),
+                }
+                .map(at)
+            })
+        })
+}
+
 /// Evaluate a parsed input: the wasm entry's work, callable natively.
 pub fn evaluate_input(input: InputParams) -> Result<DesignFacts, String> {
+    if let Some(e) = invalid(&input) {
+        return Err(e);
+    }
     let source_type = parse_source_type(&input.source_type)?;
     let lined_fit = parse_lined_fit(input.lined_fit.as_deref())?;
     let params = Params {
@@ -444,6 +473,19 @@ mod tests {
     /// End-to-end: the demo case must rate NC=23 and hand back 8 band facts,
     /// some controlling bands, at least one design-lever sensitivity, and
     /// three block summaries.
+    /// Inputs that make no physical sense are refused, with what is wrong.
+    #[test]
+    fn nonsense_refused() {
+        let input = |flow: f64, lining: f64| InputParams {
+            source_type: "fcu".into(), source_offset_db: 0.0, volume_flow_m3s: flow, room_volume_m3: 100.0,
+            receiver_distance_m: 1.5, lined_fit: None,
+            blocks: vec![InputBlock::Segment { length_m: 2.0, width_m: 0.2, height_m: 0.2, lining_m: lining }],
+        };
+        assert!(evaluate_input(input(0.2, 0.025)).is_ok());
+        assert!(evaluate_input(input(0.0, 0.025)).err().unwrap().contains("volume_flow_m3s"));
+        assert!(evaluate_input(input(0.2, 0.1)).err().unwrap().contains("no airway"));
+    }
+
     #[test]
     fn demo_case_produces_full_facts() {
         let params = CoreParams::demo();
