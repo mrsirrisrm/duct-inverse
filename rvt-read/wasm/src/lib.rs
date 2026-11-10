@@ -165,9 +165,11 @@ fn unrated_issues(net: &Network, rated: &std::collections::HashSet<usize>, too_l
                 "severity": "warning",
                 "elements": ts.iter().map(|&t| net.nodes[t].id).collect::<Vec<_>>(),
                 "message": format!(
-                    "{} ({:.0} L/s) reach unit {} ({}) only through ductwork assigned to none of its air systems, so they are left out: a room they serve is rated without them, or not at all{}",
-                    if ts.len() == 1 { "1 terminal".to_string() } else { format!("{} terminals", ts.len()) }, q * 1000.0, unit.id, unit.family,
-                    if rooms.is_empty() { String::new() } else { format!(". They are in {}", rooms.join("; ")) }
+                    "{} ({:.0} L/s) {} unit {} ({}) only through ductwork assigned to none of its air systems, so {}{}",
+                    if ts.len() == 1 { "1 terminal".to_string() } else { format!("{} terminals", ts.len()) }, q * 1000.0,
+                    if ts.len() == 1 { "reaches" } else { "reach" }, unit.id, unit.family,
+                    if ts.len() == 1 { "it is left out: a room it serves is rated without it, or not at all" } else { "they are left out: a room they serve is rated without them, or not at all" },
+                    if rooms.is_empty() { String::new() } else { format!(". {} in {}", if ts.len() == 1 { "It is" } else { "They are" }, rooms.join("; ")) }
                 ),
                 "check": "which system their ductwork belongs to, and assign it to the unit's",
             })
@@ -290,9 +292,17 @@ fn issues(net: &Network) -> Vec<Value> {
                     ),
                 }
             ),
-            "details": on_systems.iter().map(|sys| {
-                let on: Vec<i64> = unserved.iter().filter(|&&n| net.nodes[n].systems.iter().any(|x| x == sys)).map(|&n| net.nodes[n].id).collect();
-                format!("{sys}: {} terminal{}, {}", on.len(), if on.len() == 1 { "" } else { "s" }, on.iter().map(i64::to_string).collect::<Vec<_>>().join(", "))
+            "details": on_systems.iter().map(|&sys| Some(sys)).chain([None]).filter_map(|sys| {
+                // Those on no system at all last.
+                let on: Vec<i64> = unserved
+                    .iter()
+                    .filter(|&&n| match sys {
+                        Some(sys) => net.nodes[n].systems.iter().any(|x| x == sys),
+                        None => net.nodes[n].systems.iter().all(|x| x.is_empty()),
+                    })
+                    .map(|&n| net.nodes[n].id)
+                    .collect();
+                (!on.is_empty()).then(|| format!("{}: {} terminal{}, {}", sys.unwrap_or("no system"), on.len(), if on.len() == 1 { "" } else { "s" }, on.iter().map(i64::to_string).collect::<Vec<_>>().join(", ")))
             }).collect::<Vec<_>>(),
             "check": "their ductwork for a gap, or for a unit not in this model (in a linked one)",
         })

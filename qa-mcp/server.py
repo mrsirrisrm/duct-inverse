@@ -336,10 +336,15 @@ def reply_to(msg):
 
 
 def serve_stdio():
+    # This file changed under a running session: become the new one after
+    # answering (stateless, so the client never notices).
+    born = Path(__file__).stat().st_mtime
     for line in sys.stdin:
         if line.strip() and (reply := reply_to(json.loads(line))):
             sys.stdout.write(json.dumps(reply) + "\n")
             sys.stdout.flush()
+        if Path(__file__).stat().st_mtime != born:
+            os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 def serve_http(port):
