@@ -405,19 +405,48 @@ fn grouped(issues: Vec<Value>) -> Vec<Value> {
 }
 
 /// Rule coverage over the fittings, terminals and equipment, by element, and
-/// the distinct names the rules left: the classifier's queue.
-fn classified(net: &Network) -> Value {
-    let mut left = std::collections::BTreeMap::<(&str, &str), usize>::new();
-    let (mut total, mut named) = (0, 0);
-    for n in net.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Fitting | NodeKind::Terminal | NodeKind::Equipment)) {
+/// the distinct names the rules left: the classifier's queue. Fittings and
+/// equipment connected to no duct (radiators, pipework's connection nodes)
+/// are counted but not queued: no rating can reach them. `rated` marks the elements on rated
+/// paths, which a row counts as rated anyway, by their category.
+fn classified(net: &Network, rated: &[bool]) -> Value {
+    // Each element's connected piece, and whether any duct is in it.
+    let adj = net.neighbours();
+    let mut piece = vec![usize::MAX; net.nodes.len()];
+    let mut has_duct = Vec::new();
+    for start in 0..net.nodes.len() {
+        if piece[start] != usize::MAX {
+            continue;
+        }
+        let (k, mut stack, mut duct) = (has_duct.len(), vec![start], false);
+        piece[start] = k;
+        while let Some(n) = stack.pop() {
+            duct |= matches!(net.nodes[n].kind, NodeKind::Duct { .. } | NodeKind::DuctNoGeometry);
+            for &m in &adj[n] {
+                if piece[m] == usize::MAX {
+                    piece[m] = k;
+                    stack.push(m);
+                }
+            }
+        }
+        has_duct.push(duct);
+    }
+    let mut left = std::collections::BTreeMap::<(&str, &str), (usize, usize)>::new();
+    let (mut total, mut named, mut off_ductwork) = (0, 0, 0);
+    for (i, n) in net.nodes.iter().enumerate().filter(|(_, n)| matches!(n.kind, NodeKind::Fitting | NodeKind::Terminal | NodeKind::Equipment)) {
         total += 1;
         match classify_node(n) {
             Some(_) => named += 1,
-            None => *left.entry((&n.family, &n.type_name)).or_default() += 1,
+            None if !has_duct[piece[i]] && n.kind != NodeKind::Terminal => off_ductwork += 1,
+            None => {
+                let row = left.entry((&n.family, &n.type_name)).or_default();
+                row.0 += 1;
+                row.1 += usize::from(rated.get(i).copied().unwrap_or(false));
+            }
         }
     }
-    let queue: Vec<Value> = left.iter().map(|((f, t), k)| json!({ "family": f, "type": t, "elements": k })).collect();
-    json!({ "elements": total, "by_rule": named, "for_classifier": queue })
+    let queue: Vec<Value> = left.iter().map(|((f, t), (k, r))| json!({ "family": f, "type": t, "elements": k, "rated_by_category": r })).collect();
+    json!({ "elements": total, "by_rule": named, "off_ductwork": off_ductwork, "for_classifier": queue })
 }
 
 /// A forward-curved fan's sound power from its flow, TM 5-805-4 (eq. 10-5,
@@ -556,7 +585,7 @@ pub fn analyse_bytes(
     }
     let systems: Vec<_> = path::unit_systems(&net).into_iter().filter(|u| !outside_air(&u.system)).collect();
     if systems.is_empty() {
-        return Ok(json!({ "recorded": recorded, "ifc": ifc, "healed": healed, "classified": classified(&net), "issues": issues, "path": null }));
+        return Ok(json!({ "recorded": recorded, "ifc": ifc, "healed": healed, "classified": classified(&net, &[]), "issues": issues, "path": null }));
     }
     // Each unit's flow, its terminals' sum, and its sound power: no sound
     // data in the model, so without the unit's own an estimate from its flow.
@@ -668,9 +697,36 @@ pub fn analyse_bytes(
         }
     }
     let terminals_rated = paths.len();
+    let mut on_rated_paths = vec![false; net.nodes.len()];
+    paths.iter().flat_map(|p| p.2.iter()).for_each(|&n| on_rated_paths[n] = true);
     let (unrated, terminal_tally) = unrated_issues(&net, &paths.iter().map(|p| p.1).collect(), &too_long, &|t| locate(t).and_then(|p| ifc::space_at(&spaces, p)).map(|k| spaces[k].name.clone()));
     issues.extend(unrated);
     issues.extend(feeding_issues(&net, &paths.iter().map(|p| systems[p.0].tree.root).collect()));
+    // Unserved terminals on a rated unit's system: that unit's branch splits
+    // share its power among fewer outlets than designed, so the rest of its
+    // terminals are rated louder than they are.
+    if let Some(issue) = issues.iter_mut().find(|i| i["kind"] == "terminals_unserved") {
+        let ids: Vec<i64> = issue["elements"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
+        let sharing: Vec<String> = systems
+            .iter()
+            .filter(|u| ids.iter().any(|&id| net.find(id).is_some_and(|n| net.nodes[n].systems.contains(&u.system))))
+            .map(|u| format!("{} ({})", net.nodes[u.tree.root].id, u.system))
+            .collect();
+        if !sharing.is_empty() {
+            let message = format!(
+                "{}. {} rated {} on the same systems as some of them, so {} rated with fewer outlets sharing {} power than designed: {} other terminals may be rated louder than they are. {}: {}",
+                issue["message"].as_str().unwrap_or_default(),
+                sharing.len(), if sharing.len() == 1 { "unit is" } else { "units are" },
+                if sharing.len() == 1 { "it is" } else { "they are" },
+                if sharing.len() == 1 { "its" } else { "their" },
+                if sharing.len() == 1 { "its" } else { "their" },
+                if sharing.len() == 1 { "The unit" } else { "The units" },
+                sharing.join("; ")
+            );
+            issue["message"] = json!(message);
+            issue["units_sharing_systems"] = json!(sharing);
+        }
+    }
     if paths.is_empty() {
         return Err(format!("every path from the units maps to more than the engine's {MAX_BLOCKS} blocks"));
     }
@@ -858,9 +914,10 @@ pub fn analyse_bytes(
             "severity": "warning",
             "elements": [loudest_unit["element"]],
             "message": format!(
-                "the worst room, {}, is set at {:.0} Hz by unit {}'s own noise ({:.0}% of it), and the model gives no sound power for the unit: it is estimated from the unit's flow",
+                "the worst room, {}, is set at {:.0} Hz by unit {}'s own noise ({:.0}% of it), and the model gives no sound power for the unit: it is estimated from the flow its terminals' design flows sum to{}",
                 room.space.map_or("a terminal in no space".to_string(), |k| spaces[k].name.clone()),
-                worst["band_hz"].as_f64().unwrap(), loudest_unit["element"], unit_share * 100.0
+                worst["band_hz"].as_f64().unwrap(), loudest_unit["element"], unit_share * 100.0,
+                systems.iter().position(|s| loudest_unit["element"] == net.nodes[s.tree.root].id).map_or(String::new(), |u| format!(", {:.0} L/s", units[u].0 * 1000.0))
             ),
             "check": "the unit's sound power data, entered as its sound power",
         }));
@@ -998,7 +1055,7 @@ pub fn analyse_bytes(
         "terminals_on_ducts": on_ducts,
         "runs_on_ducts": runs_on_ducts,
         "healed": healed,
-        "classified": classified(&net),
+        "classified": classified(&net, &on_rated_paths),
         "issues": issues,
         "path": {
             "unit": { "id": unit.id, "family": unit.family, "air_flow_l_s": unit.flow.map(|q| q * 1000.0) },
@@ -1024,7 +1081,7 @@ pub fn analyse_bytes(
         "terminals": terminals_json,
         "assumptions": [
             if source.is_some() { "source: every unit's sound power as given" } else { "source: each unit's system a forward-curved fan at its flow, 250 Pa for a supply and 125 Pa for a return or extract, by the Revit system type's classification, else the system's name (no sound data given)" },
-            "units: every mechanical equipment element (by its Revit category or IFC class, whatever its name) whose ductwork reaches terminals; classified.for_classifier lists the names no rule knows, which units and terminals are rated without",
+            "units: every mechanical equipment element (by its Revit category or IFC class, whatever its name) whose ductwork reaches terminals; classified.for_classifier lists the names on ductwork that no rule knows, and how many of each are rated anyway by their category (a terminal as a diffuser, a unit as a fan); fittings and equipment that join no ductwork are only counted (off_ductwork)",
             "systems whose terminals are outside, discharging or drawing in outdoor air by their names, are not rated",
             "terminals with no design flow named as caps, louvres, hoods or intakes are outdoor terminations, serving no room",
             if spaces.is_empty() { "rooms: the model has no spaces, so every terminal is rated alone" } else if revit_rooms { "rooms from the Revit model's MEP spaces, their volume their extent's" } else { "rooms from the IFC's spaces, their volume their extent's" },
