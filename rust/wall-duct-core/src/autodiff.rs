@@ -12,8 +12,8 @@
 //! compiles to a ~50-line WASM binary contribution and auto-vectorises well.
 //!
 //! Usage:
-//! ```ignore
-//! use wall_tl_core::autodiff::Dual;
+//! ```
+//! use wall_duct_core::autodiff::Dual;
 //! // Take gradient of y = x0^2 + 3*x1 at (x0, x1) = (4.0, 2.0).
 //! let x0 = Dual::<2>::var(4.0, 0);
 //! let x1 = Dual::<2>::var(2.0, 1);

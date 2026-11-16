@@ -1,5 +1,6 @@
 {
   "name": "wall-duct-wasm",
+  "type": "module",
   "description": "WebAssembly wrapper for wall-duct-core.",
   "version": "0.1.0",
   "license": "MIT",
@@ -8,7 +9,9 @@
     "wall_duct_wasm.js",
     "wall_duct_wasm.d.ts"
   ],
-  "module": "wall_duct_wasm.js",
+  "main": "wall_duct_wasm.js",
   "types": "wall_duct_wasm.d.ts",
-  "sideEffects": false
+  "sideEffects": [
+    "./snippets/*"
+  ]
 }

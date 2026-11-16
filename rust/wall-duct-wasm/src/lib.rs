@@ -108,7 +108,10 @@ pub struct BandFact {
     pub freq_hz: f64,
     pub spl_db: f64,
     pub nc_curve_db: f64,
-    pub exceedance_db: f64,
+    /// The next-lower NC curve, which `over_nc_below_db` is measured against:
+    /// a band over it is one that kept the rating from being lower.
+    pub nc_below_db: f64,
+    pub over_nc_below_db: f64,
 }
 
 #[derive(Serialize)]
@@ -262,30 +265,34 @@ pub fn evaluate_params(input_source_type: String, params: Params) -> DesignFacts
     let nc_val = nc::nc_exact(&spl_values);
     let nc_curve = nc::curve_at(nc_val as f64);
     let exceedance = nc::band_exceedances(&spl_values, nc_val);
+    let nc_below = nc::curve_at((nc_val - 1).max(nc::NC_MIN_LABEL) as f64);
 
-    // Band facts: per-band SPL, fitted NC curve, exceedance vs one curve below.
+    // Band facts: per-band SPL, the rating's NC curve, and the excess over the
+    // curve one below, shown alongside so the two are read against each other.
     let mut receiver_spl_bands = Vec::with_capacity(N_BANDS);
     for i in 0..N_BANDS {
         receiver_spl_bands.push(BandFact {
             freq_hz: OCTAVE_BANDS_HZ[i],
             spl_db: (spl_values[i] * 10.0).round() / 10.0,
             nc_curve_db: (nc_curve[i] * 10.0).round() / 10.0,
-            exceedance_db: (exceedance[i] * 100.0).round() / 100.0,
+            nc_below_db: (nc_below[i] * 10.0).round() / 10.0,
+            over_nc_below_db: (exceedance[i] * 100.0).round() / 100.0,
         });
     }
 
-    // Controlling bands: exceedance > 0.05 dB, sorted desc (matches Python).
+    // Controlling bands: over the next-lower curve by > 0.05 dB, sorted desc (matches Python).
     let mut controlling: Vec<BandFact> = receiver_spl_bands
         .iter()
-        .filter(|b| b.exceedance_db > 0.05)
+        .filter(|b| b.over_nc_below_db > 0.05)
         .map(|b| BandFact {
             freq_hz: b.freq_hz,
             spl_db: b.spl_db,
             nc_curve_db: b.nc_curve_db,
-            exceedance_db: b.exceedance_db,
+            nc_below_db: b.nc_below_db,
+            over_nc_below_db: b.over_nc_below_db,
         })
         .collect();
-    controlling.sort_by(|a, b| b.exceedance_db.partial_cmp(&a.exceedance_db).unwrap());
+    controlling.sort_by(|a, b| b.over_nc_below_db.partial_cmp(&a.over_nc_below_db).unwrap());
     controlling.truncate(5);
 
     // Sensitivity per slot: sum of ∂SPL/∂slot across the *controlling* bands
@@ -476,24 +483,38 @@ mod tests {
     use super::*;
     use wall_duct_core::model::Params as CoreParams;
 
-    /// End-to-end: the demo case must rate NC=23 and hand back 8 band facts,
-    /// some controlling bands, at least one design-lever sensitivity, and
-    /// three block summaries.
     /// Inputs that make no physical sense are refused, with what is wrong.
     #[test]
     fn nonsense_refused() {
-        let input = |flow: f64, lining: f64| InputParams {
+        let seg = |length_m: f64, width_m: f64, lining_m: f64| InputBlock::Segment { length_m, width_m, height_m: width_m, lining_m };
+        let input = |flow: f64, block: InputBlock| InputParams {
             source_type: "fcu".into(), source_offset_db: 0.0, volume_flow_m3s: flow, room_volume_m3: 100.0,
-            receiver_distance_m: 1.5, lined_fit: None,
-            blocks: vec![InputBlock::Segment { length_m: 2.0, width_m: 0.2, height_m: 0.2, lining_m: lining }],
+            receiver_distance_m: 1.5, lined_fit: None, blocks: vec![block],
         };
-        assert!(evaluate_input(input(0.2, 0.025)).is_ok());
-        assert!(evaluate_input(input(0.0, 0.025)).err().unwrap().contains("volume_flow_m3s"));
-        assert!(evaluate_input(input(0.2, 0.1)).err().unwrap().contains("no airway"));
-        assert!(evaluate_input(input(0.2, 0.06)).err().unwrap().contains("over half"));
-        assert!(evaluate_input(input(-0.2, 0.025)).is_err());
+        let refused = |i: InputParams, why: &str| {
+            let e = evaluate_input(i).err().unwrap();
+            assert!(e.contains(why), "{e:?} lacks {why:?}");
+        };
+        assert!(evaluate_input(input(0.2, seg(2.0, 0.2, 0.025))).is_ok());
+        refused(input(0.0, seg(2.0, 0.2, 0.025)), "volume_flow_m3s");
+        refused(input(-0.2, seg(2.0, 0.2, 0.025)), "volume_flow_m3s");
+        refused(InputParams { room_volume_m3: 0.0, ..input(0.2, seg(2.0, 0.2, 0.025)) }, "room_volume_m3");
+        refused(InputParams { receiver_distance_m: -1.0, ..input(0.2, seg(2.0, 0.2, 0.025)) }, "receiver_distance_m");
+        refused(input(0.2, seg(2.0, 0.0, 0.0)), "width_m");
+        refused(input(0.2, seg(-1.0, 0.2, 0.025)), "length_m must not be negative");
+        refused(input(0.2, seg(2.0, 0.2, 0.1)), "no airway");
+        refused(input(0.2, seg(2.0, 0.2, 0.06)), "over half");
+        // Only the 0.1 m cap catches this one: 600 x 600 has room for it.
+        refused(input(0.2, seg(2.0, 0.6, 0.11)), "up to 0.1 m");
+        let att = |free_area_ratio: f64| InputBlock::Attenuator { length_m: 0.9, width_m: 0.6, height_m: 0.6, free_area_ratio, splitter_m: 0.1 };
+        assert!(evaluate_input(input(0.2, att(0.5))).is_ok());
+        refused(input(0.2, att(0.0)), "free_area_ratio");
+        refused(input(0.2, att(1.2)), "free_area_ratio");
     }
 
+    /// End-to-end: the demo case must rate NC=23 and hand back 8 band facts,
+    /// some controlling bands, at least one design-lever sensitivity, and
+    /// three block summaries.
     #[test]
     fn demo_case_produces_full_facts() {
         let params = CoreParams::demo();
@@ -508,6 +529,12 @@ mod tests {
 
         // Controlling bands should be non-empty at NC 24 for this demo.
         assert!(!out.controlling_bands.is_empty());
+        // Each band's excess is read against the curve shown beside it, the
+        // next-lower one (QA #26: it was shown beside the rating's curve).
+        for b in &out.receiver_spl_bands {
+            assert!((b.over_nc_below_db - (b.spl_db - b.nc_below_db).max(0.0)).abs() < 0.06, "{} Hz", b.freq_hz);
+            assert!(b.nc_below_db <= b.nc_curve_db);
+        }
 
         // Top sensitivities exclude constraint params.
         assert!(!out.top_sensitivities.is_empty());

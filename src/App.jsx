@@ -399,18 +399,18 @@ export default function App() {
                   <div class="card">
                     <h3>Controlling bands</h3>
                     <Show when={f().controlling_bands.length > 0}
-                          fallback={<div class="hint">No band exceeds the NC curve — the design sits inside the target.</div>}>
+                          fallback={<div class="hint">No band is over the next-lower NC curve.</div>}>
                       <table>
                         <thead>
-                          <tr><th class="left">f (Hz)</th><th>SPL</th><th>NC curve</th><th>excess</th></tr>
+                          <tr><th class="left">f (Hz)</th><th>SPL</th><th>NC {f().nc - 1} curve</th><th>over it</th></tr>
                         </thead>
                         <tbody>
                           <For each={f().controlling_bands}>{(b) => (
                             <tr>
                               <td class="left">{b.freq_hz.toFixed(0)}</td>
                               <td>{b.spl_db.toFixed(1)}</td>
-                              <td>{b.nc_curve_db.toFixed(1)}</td>
-                              <td>+{b.exceedance_db.toFixed(2)}</td>
+                              <td>{b.nc_below_db.toFixed(1)}</td>
+                              <td>+{b.over_nc_below_db.toFixed(2)}</td>
                             </tr>
                           )}</For>
                         </tbody>
